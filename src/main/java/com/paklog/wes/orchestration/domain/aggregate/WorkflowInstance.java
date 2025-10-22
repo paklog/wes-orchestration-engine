@@ -1,5 +1,7 @@
 package com.paklog.wes.orchestration.domain.aggregate;
 
+import com.paklog.wes.orchestration.domain.entity.StepExecution;
+import com.paklog.wes.orchestration.domain.entity.SystemLoad;
 import com.paklog.wes.orchestration.domain.event.*;
 import com.paklog.wes.orchestration.domain.valueobject.*;
 import lombok.AllArgsConstructor;
@@ -86,7 +88,7 @@ public class WorkflowInstance {
     }
 
     /**
-     * Execute a workflow step
+     * Execute a workflow step (enhanced with saga support)
      */
     public void executeStep(String stepId, StepResult result) {
         if (this.status != WorkflowStatus.EXECUTING) {
@@ -98,11 +100,16 @@ public class WorkflowInstance {
             throw new IllegalArgumentException("Step not found: " + stepId);
         }
 
-        step.setStatus(StepStatus.COMPLETED);
-        step.setExecutedAt(Instant.now());
-        step.setResult(result);
+        // Mark step as completed
+        step.markCompleted(result);
 
+        // Add to executed steps for compensation tracking
+        if (this.executedSteps == null) {
+            this.executedSteps = new ArrayList<>();
+        }
         this.executedSteps.add(stepId);
+
+        // Determine next step
         this.currentStepId = getNextStepId(stepId);
 
         addDomainEvent(WorkflowStepExecutedEvent.builder()
@@ -110,8 +117,71 @@ public class WorkflowInstance {
             .stepId(stepId)
             .stepName(step.getStepName())
             .result(result)
-            .executedAt(step.getExecutedAt())
+            .executedAt(step.getCompletedAt())
             .build());
+    }
+
+    /**
+     * Start executing a specific step
+     */
+    public void startStepExecution(String stepId) {
+        if (this.status != WorkflowStatus.EXECUTING) {
+            throw new IllegalStateException("Cannot start step when workflow is not in EXECUTING status");
+        }
+
+        StepExecution step = this.steps.get(stepId);
+        if (step == null) {
+            throw new IllegalArgumentException("Step not found: " + stepId);
+        }
+
+        step.execute();
+        this.currentStepId = stepId;
+    }
+
+    /**
+     * Handle step execution failure
+     */
+    public void handleStepFailure(String stepId, WorkflowError error) {
+        StepExecution step = this.steps.get(stepId);
+        if (step == null) {
+            throw new IllegalArgumentException("Step not found: " + stepId);
+        }
+
+        step.markFailed(error);
+
+        // Check if step can be retried
+        boolean willRetry = step.canRetry();
+
+        addDomainEvent(WorkflowStepFailedEvent.builder()
+            .workflowInstanceId(this.id)
+            .stepId(stepId)
+            .stepName(step.getStepName())
+            .error(error)
+            .willRetry(willRetry)
+            .retryCount(step.getRetryCount())
+            .failedAt(Instant.now())
+            .build());
+
+        if (!willRetry && !error.isRecoverable()) {
+            // Trigger workflow failure and compensation
+            this.fail(error);
+        }
+    }
+
+    /**
+     * Retry a failed step
+     */
+    public void retryStep(String stepId) {
+        StepExecution step = this.steps.get(stepId);
+        if (step == null) {
+            throw new IllegalArgumentException("Step not found: " + stepId);
+        }
+
+        if (!step.canRetry()) {
+            throw new IllegalStateException("Step cannot be retried: " + stepId);
+        }
+
+        step.retry();
     }
 
     /**
@@ -150,7 +220,7 @@ public class WorkflowInstance {
     }
 
     /**
-     * Compensate workflow (rollback)
+     * Compensate workflow (rollback) - Enhanced saga pattern
      */
     public void compensate() {
         if (this.status != WorkflowStatus.FAILED && this.status != WorkflowStatus.COMPENSATING) {
@@ -159,13 +229,85 @@ public class WorkflowInstance {
 
         this.status = WorkflowStatus.COMPENSATING;
 
-        // Execute compensation in reverse order
-        Collections.reverse(this.executedSteps);
+        // Get steps to compensate (in reverse order)
+        List<String> stepsToCompensate = new ArrayList<>(this.executedSteps);
+        Collections.reverse(stepsToCompensate);
 
         addDomainEvent(WorkflowCompensationStartedEvent.builder()
             .workflowInstanceId(this.id)
-            .stepsToCompensate(new ArrayList<>(this.executedSteps))
+            .stepsToCompensate(stepsToCompensate)
             .startedAt(Instant.now())
+            .build());
+    }
+
+    /**
+     * Compensate a specific step
+     */
+    public void compensateStep(String stepId) {
+        if (this.status != WorkflowStatus.COMPENSATING) {
+            throw new IllegalStateException("Can only compensate steps during compensation");
+        }
+
+        StepExecution step = this.steps.get(stepId);
+        if (step == null) {
+            throw new IllegalArgumentException("Step not found: " + stepId);
+        }
+
+        if (!step.requiresCompensation()) {
+            throw new IllegalStateException("Step does not require compensation: " + stepId);
+        }
+
+        step.compensate();
+    }
+
+    /**
+     * Mark step as compensated
+     */
+    public void markStepCompensated(String stepId) {
+        StepExecution step = this.steps.get(stepId);
+        if (step == null) {
+            throw new IllegalArgumentException("Step not found: " + stepId);
+        }
+
+        step.markCompensated();
+
+        if (this.compensatedSteps == null) {
+            this.compensatedSteps = new ArrayList<>();
+        }
+        this.compensatedSteps.add(stepId);
+    }
+
+    /**
+     * Complete compensation successfully
+     */
+    public void completeCompensation() {
+        if (this.status != WorkflowStatus.COMPENSATING) {
+            throw new IllegalStateException("Not in compensating status");
+        }
+
+        this.status = WorkflowStatus.COMPENSATED;
+        this.completedAt = Instant.now();
+
+        addDomainEvent(WorkflowCompensationCompletedEvent.builder()
+            .workflowInstanceId(this.id)
+            .compensatedSteps(new ArrayList<>(this.compensatedSteps))
+            .successful(true)
+            .completedAt(this.completedAt)
+            .build());
+    }
+
+    /**
+     * Handle compensation failure
+     */
+    public void failCompensation(String errorMessage) {
+        this.status = WorkflowStatus.COMPENSATED; // Mark as compensated even if partial failure
+
+        addDomainEvent(WorkflowCompensationCompletedEvent.builder()
+            .workflowInstanceId(this.id)
+            .compensatedSteps(new ArrayList<>(this.compensatedSteps))
+            .successful(false)
+            .errorMessage(errorMessage)
+            .completedAt(Instant.now())
             .build());
     }
 
@@ -255,9 +397,30 @@ public class WorkflowInstance {
      * Check if workflow can transition to waveless processing
      */
     public boolean canTransitionToWaveless() {
-        return this.workflowType == WorkflowType.ORDER_FULFILLMENT
+        return this.workflowType != null
+            && this.workflowType.supportsWaveless()
             && this.status == WorkflowStatus.EXECUTING
             && this.priority == WorkflowPriority.HIGH;
+    }
+
+    /**
+     * Transition to waveless processing
+     */
+    public void transitionToWaveless(int batchSize, long processingIntervalMs) {
+        if (!canTransitionToWaveless()) {
+            throw new IllegalStateException("Workflow cannot transition to waveless processing");
+        }
+
+        updateContext("wavelessEnabled", true);
+        updateContext("batchSize", batchSize);
+        updateContext("processingIntervalMs", processingIntervalMs);
+
+        addDomainEvent(WavelessProcessingEnabledEvent.builder()
+            .workflowInstanceId(this.id)
+            .batchSize(batchSize)
+            .processingIntervalMs(processingIntervalMs)
+            .enabledAt(Instant.now())
+            .build());
     }
 
     /**
@@ -269,11 +432,88 @@ public class WorkflowInstance {
             .count();
 
         return SystemLoad.builder()
+            .id("load-" + this.id)
             .workflowInstanceId(this.id)
             .activeSteps(activeSteps)
             .totalSteps(steps.size())
             .utilizationPercentage(calculateUtilization())
+            .timestamp(Instant.now())
             .build();
+    }
+
+    /**
+     * Check if workflow has timed out
+     */
+    public boolean hasTimedOut(long timeoutMs) {
+        if (this.startedAt == null || this.status.isTerminal()) {
+            return false;
+        }
+
+        long elapsedMs = Instant.now().toEpochMilli() - this.startedAt.toEpochMilli();
+        return elapsedMs > timeoutMs;
+    }
+
+    /**
+     * Get steps that need compensation
+     */
+    public List<StepExecution> getStepsRequiringCompensation() {
+        if (this.executedSteps == null || this.executedSteps.isEmpty()) {
+            return List.of();
+        }
+
+        List<StepExecution> stepsToCompensate = new ArrayList<>();
+        // Reverse order for compensation
+        for (int i = executedSteps.size() - 1; i >= 0; i--) {
+            String stepId = executedSteps.get(i);
+            StepExecution step = steps.get(stepId);
+            if (step != null && step.requiresCompensation()) {
+                stepsToCompensate.add(step);
+            }
+        }
+        return stepsToCompensate;
+    }
+
+    /**
+     * Check if all steps are completed
+     */
+    public boolean allStepsCompleted() {
+        if (this.steps == null || this.steps.isEmpty()) {
+            return false;
+        }
+
+        return this.steps.values().stream()
+            .allMatch(step -> step.getStatus() == StepStatus.COMPLETED
+                || step.getStatus() == StepStatus.SKIPPED);
+    }
+
+    /**
+     * Get progress percentage
+     */
+    public double getProgressPercentage() {
+        if (this.steps == null || this.steps.isEmpty()) {
+            return 0.0;
+        }
+
+        long completedSteps = this.steps.values().stream()
+            .filter(step -> step.getStatus() == StepStatus.COMPLETED
+                || step.getStatus() == StepStatus.SKIPPED)
+            .count();
+
+        return ((double) completedSteps / this.steps.size()) * 100;
+    }
+
+    /**
+     * Check if workflow is active
+     */
+    public boolean isActive() {
+        return this.status != null && this.status.isActive();
+    }
+
+    /**
+     * Check if workflow is terminal
+     */
+    public boolean isTerminal() {
+        return this.status != null && this.status.isTerminal();
     }
 
     // Private helper methods
