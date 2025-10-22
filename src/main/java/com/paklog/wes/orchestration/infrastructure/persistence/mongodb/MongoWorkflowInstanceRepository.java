@@ -4,16 +4,16 @@ import com.paklog.wes.orchestration.domain.aggregate.WorkflowInstance;
 import com.paklog.wes.orchestration.domain.repository.WorkflowInstanceRepository;
 import com.paklog.wes.orchestration.domain.valueobject.WorkflowStatus;
 import com.paklog.wes.orchestration.domain.valueobject.WorkflowType;
+import com.paklog.wes.orchestration.infrastructure.persistence.mongodb.document.WorkflowInstanceDocument;
+import com.paklog.wes.orchestration.infrastructure.persistence.mongodb.mapper.WorkflowMapper;
+import com.paklog.wes.orchestration.infrastructure.persistence.mongodb.repository.SpringDataMongoWorkflowRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.mongodb.core.MongoTemplate;
-import org.springframework.data.mongodb.core.query.Criteria;
-import org.springframework.data.mongodb.core.query.Query;
-import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * MongoDB implementation of WorkflowInstanceRepository
@@ -25,80 +25,74 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class MongoWorkflowInstanceRepository implements WorkflowInstanceRepository {
 
-    private final MongoTemplate mongoTemplate;
-    private final SpringDataMongoWorkflowInstanceRepository springDataRepository;
+    private final SpringDataMongoWorkflowRepository springDataRepository;
+    private final WorkflowMapper workflowMapper;
 
     @Override
     public WorkflowInstance save(WorkflowInstance workflowInstance) {
-        return springDataRepository.save(workflowInstance);
+        WorkflowInstanceDocument document = workflowMapper.toDocument(workflowInstance);
+        WorkflowInstanceDocument savedDocument = springDataRepository.save(document);
+        return workflowMapper.toDomain(savedDocument);
     }
 
     @Override
     public Optional<WorkflowInstance> findById(String id) {
-        return springDataRepository.findById(id);
+        return springDataRepository.findById(id)
+            .map(workflowMapper::toDomain);
     }
 
     @Override
     public List<WorkflowInstance> findByStatus(WorkflowStatus status) {
-        Query query = new Query(Criteria.where("status").is(status));
-        return mongoTemplate.find(query, WorkflowInstance.class);
+        return springDataRepository.findByStatus(status.name()).stream()
+            .map(workflowMapper::toDomain)
+            .collect(Collectors.toList());
     }
 
     @Override
     public List<WorkflowInstance> findByType(WorkflowType type) {
-        Query query = new Query(Criteria.where("workflowType").is(type));
-        return mongoTemplate.find(query, WorkflowInstance.class);
+        return springDataRepository.findByWorkflowType(type.name()).stream()
+            .map(workflowMapper::toDomain)
+            .collect(Collectors.toList());
     }
 
     @Override
     public List<WorkflowInstance> findByCorrelationId(String correlationId) {
-        Query query = new Query(Criteria.where("correlationId").is(correlationId));
-        return mongoTemplate.find(query, WorkflowInstance.class);
+        return springDataRepository.findByCorrelationId(correlationId).stream()
+            .map(workflowMapper::toDomain)
+            .collect(Collectors.toList());
     }
 
     @Override
     public List<WorkflowInstance> findActiveWorkflows() {
-        Query query = new Query(
-            Criteria.where("status").in(
-                WorkflowStatus.EXECUTING,
-                WorkflowStatus.PAUSED,
-                WorkflowStatus.COMPENSATING
-            )
-        );
-        return mongoTemplate.find(query, WorkflowInstance.class);
+        return springDataRepository.findActiveWorkflows().stream()
+            .map(workflowMapper::toDomain)
+            .collect(Collectors.toList());
     }
 
     @Override
     public List<WorkflowInstance> findByCreatedAtBetween(Instant startTime, Instant endTime) {
-        Query query = new Query(
-            Criteria.where("createdAt")
-                .gte(startTime)
-                .lte(endTime)
-        );
-        return mongoTemplate.find(query, WorkflowInstance.class);
+        return springDataRepository.findByCreatedAtBetween(startTime, endTime).stream()
+            .map(workflowMapper::toDomain)
+            .collect(Collectors.toList());
     }
 
     @Override
     public List<WorkflowInstance> findPendingWorkflows() {
-        Query query = new Query(Criteria.where("status").is(WorkflowStatus.PENDING));
-        query.limit(100); // Process in batches
-        return mongoTemplate.find(query, WorkflowInstance.class);
+        return springDataRepository.findPendingWorkflows().stream()
+            .map(workflowMapper::toDomain)
+            .collect(Collectors.toList());
     }
 
     @Override
     public List<WorkflowInstance> findWorkflowsForRetry() {
-        Query query = new Query(
-            Criteria.where("status").is(WorkflowStatus.FAILED)
-                .and("retryCount").lt("maxRetries")
-        );
-        query.limit(50); // Process failed workflows in batches
-        return mongoTemplate.find(query, WorkflowInstance.class);
+        return springDataRepository.findWorkflowsForRetry().stream()
+            .map(workflowMapper::toDomain)
+            .collect(Collectors.toList());
     }
 
     @Override
     public long countByStatus(WorkflowStatus status) {
-        Query query = new Query(Criteria.where("status").is(status));
-        return mongoTemplate.count(query, WorkflowInstance.class);
+        return springDataRepository.countByStatus(status.name());
     }
 
     @Override
@@ -113,25 +107,19 @@ public class MongoWorkflowInstanceRepository implements WorkflowInstanceReposito
 
     @Override
     public List<WorkflowInstance> findWorkflowsForWavelessProcessing() {
-        Query query = new Query(
-            Criteria.where("status").is(WorkflowStatus.EXECUTING)
-                .and("workflowType").in(
-                    WorkflowType.ORDER_FULFILLMENT,
-                    WorkflowType.PICKING,
-                    WorkflowType.PACKING
-                )
-                .and("priority").is("HIGH")
-        );
-        return mongoTemplate.find(query, WorkflowInstance.class);
+        return springDataRepository.findWorkflowsForWavelessProcessing().stream()
+            .map(workflowMapper::toDomain)
+            .collect(Collectors.toList());
     }
 
     @Override
     public void updateStatus(String workflowInstanceId, WorkflowStatus status) {
-        Query query = new Query(Criteria.where("id").is(workflowInstanceId));
-        Update update = new Update()
-            .set("status", status)
-            .set("updatedAt", Instant.now());
-
-        mongoTemplate.updateFirst(query, update, WorkflowInstance.class);
+        Optional<WorkflowInstanceDocument> documentOpt = springDataRepository.findById(workflowInstanceId);
+        if (documentOpt.isPresent()) {
+            WorkflowInstanceDocument document = documentOpt.get();
+            document.setStatus(status.name());
+            document.setUpdatedAt(Instant.now());
+            springDataRepository.save(document);
+        }
     }
 }

@@ -1,15 +1,11 @@
 package com.paklog.wes.orchestration.infrastructure.web.controller;
 
 import com.paklog.wes.orchestration.application.command.*;
-import com.paklog.wes.orchestration.application.port.in.OrchestrationUseCase;
+import com.paklog.wes.orchestration.application.service.OrchestrationApplicationService;
 import com.paklog.wes.orchestration.domain.aggregate.WorkflowInstance;
 import com.paklog.wes.orchestration.infrastructure.web.dto.*;
+import com.paklog.wes.orchestration.infrastructure.web.mapper.WorkflowDtoMapper;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.media.Content;
-import io.swagger.v3.oas.annotations.media.Schema;
-import io.swagger.v3.oas.annotations.responses.ApiResponse;
-import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -17,8 +13,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.List;
 
 /**
  * REST controller for workflow orchestration operations
@@ -30,48 +24,46 @@ import java.util.List;
 @Tag(name = "Workflow Orchestration", description = "WES orchestration engine API")
 public class WorkflowController {
 
-    private final OrchestrationUseCase orchestrationUseCase;
-    private final WorkflowMapper workflowMapper;
+    private final OrchestrationApplicationService orchestrationService;
+    private final WorkflowDtoMapper workflowMapper;
 
     @PostMapping
     @Operation(summary = "Start a new workflow instance")
-    @ApiResponses(value = {
-        @ApiResponse(responseCode = "201", description = "Workflow started successfully",
-            content = @Content(schema = @Schema(implementation = WorkflowInstanceDto.class))),
-        @ApiResponse(responseCode = "400", description = "Invalid request"),
-        @ApiResponse(responseCode = "500", description = "Internal server error")
-    })
-    public ResponseEntity<WorkflowInstanceDto> startWorkflow(
-            @Valid @RequestBody StartWorkflowRequest request) {
+    public ResponseEntity<String> startWorkflow(@Valid @RequestBody StartWorkflowRequest request) {
         log.info("Starting workflow: {}", request.getWorkflowName());
 
         StartWorkflowCommand command = workflowMapper.toCommand(request);
-        WorkflowInstance instance = orchestrationUseCase.startWorkflow(command);
-        WorkflowInstanceDto response = workflowMapper.toDto(instance);
+        String workflowId = orchestrationService.startWorkflow(command);
 
-        log.info("Workflow started successfully with ID: {}", instance.getId());
-        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        log.info("Workflow started successfully with ID: {}", workflowId);
+        return ResponseEntity.status(HttpStatus.CREATED).body(workflowId);
+    }
+
+    @GetMapping("/{id}")
+    @Operation(summary = "Get workflow status")
+    public ResponseEntity<WorkflowResponse> getWorkflow(@PathVariable String id) {
+        log.debug("Getting workflow: {}", id);
+
+        WorkflowInstance workflow = orchestrationService.getWorkflowStatus(id);
+        WorkflowResponse response = workflowMapper.toDto(workflow);
+
+        return ResponseEntity.ok(response);
     }
 
     @PostMapping("/{workflowId}/steps/execute")
     @Operation(summary = "Execute a step in a workflow")
-    @ApiResponses(value = {
-        @ApiResponse(responseCode = "200", description = "Step executed successfully"),
-        @ApiResponse(responseCode = "404", description = "Workflow not found"),
-        @ApiResponse(responseCode = "400", description = "Invalid step execution request")
-    })
     public ResponseEntity<Void> executeStep(
             @PathVariable String workflowId,
             @Valid @RequestBody ExecuteStepRequest request) {
         log.info("Executing step {} in workflow {}", request.getStepId(), workflowId);
 
         ExecuteStepCommand command = ExecuteStepCommand.builder()
-            .workflowInstanceId(workflowId)
+            .workflowId(workflowId)
             .stepId(request.getStepId())
-            .result(request.getResult())
+            .inputData(request.getInputData())
             .build();
 
-        orchestrationUseCase.executeStep(command);
+        orchestrationService.executeStep(command);
 
         return ResponseEntity.ok().build();
     }
@@ -82,10 +74,10 @@ public class WorkflowController {
         log.info("Pausing workflow: {}", workflowId);
 
         PauseWorkflowCommand command = PauseWorkflowCommand.builder()
-            .workflowInstanceId(workflowId)
+            .workflowId(workflowId)
             .build();
 
-        orchestrationUseCase.pauseWorkflow(command);
+        orchestrationService.pauseWorkflow(command);
 
         return ResponseEntity.ok().build();
     }
@@ -96,10 +88,10 @@ public class WorkflowController {
         log.info("Resuming workflow: {}", workflowId);
 
         ResumeWorkflowCommand command = ResumeWorkflowCommand.builder()
-            .workflowInstanceId(workflowId)
+            .workflowId(workflowId)
             .build();
 
-        orchestrationUseCase.resumeWorkflow(command);
+        orchestrationService.resumeWorkflow(command);
 
         return ResponseEntity.ok().build();
     }
@@ -112,11 +104,11 @@ public class WorkflowController {
         log.info("Cancelling workflow: {} with reason: {}", workflowId, reason);
 
         CancelWorkflowCommand command = CancelWorkflowCommand.builder()
-            .workflowInstanceId(workflowId)
+            .workflowId(workflowId)
             .reason(reason != null ? reason : "User requested cancellation")
             .build();
 
-        orchestrationUseCase.cancelWorkflow(command);
+        orchestrationService.cancelWorkflow(command);
 
         return ResponseEntity.ok().build();
     }
@@ -127,84 +119,28 @@ public class WorkflowController {
         log.info("Retrying workflow: {}", workflowId);
 
         RetryWorkflowCommand command = RetryWorkflowCommand.builder()
-            .workflowInstanceId(workflowId)
+            .workflowId(workflowId)
             .build();
 
-        orchestrationUseCase.retryWorkflow(command);
-
-        return ResponseEntity.ok().build();
-    }
-
-    @PutMapping("/{workflowId}/complete")
-    @Operation(summary = "Complete a workflow")
-    public ResponseEntity<Void> completeWorkflow(
-            @PathVariable String workflowId,
-            @RequestBody(required = false) CompleteWorkflowRequest request) {
-        log.info("Completing workflow: {}", workflowId);
-
-        CompleteWorkflowCommand command = CompleteWorkflowCommand.builder()
-            .workflowInstanceId(workflowId)
-            .outputParameters(request != null ? request.getOutputParameters() : null)
-            .build();
-
-        orchestrationUseCase.completeWorkflow(command);
+        orchestrationService.retryWorkflow(command);
 
         return ResponseEntity.ok().build();
     }
 
     @PutMapping("/{workflowId}/compensate")
     @Operation(summary = "Compensate (rollback) a failed workflow")
-    public ResponseEntity<Void> compensateWorkflow(@PathVariable String workflowId) {
+    public ResponseEntity<Void> compensateWorkflow(
+            @PathVariable String workflowId,
+            @RequestParam(required = false) String reason) {
         log.info("Compensating workflow: {}", workflowId);
 
         CompensateWorkflowCommand command = CompensateWorkflowCommand.builder()
-            .workflowInstanceId(workflowId)
+            .workflowId(workflowId)
+            .compensationReason(reason != null ? reason : "Manual compensation requested")
             .build();
 
-        orchestrationUseCase.compensateWorkflow(command);
+        orchestrationService.compensateWorkflow(command);
 
         return ResponseEntity.ok().build();
-    }
-
-    @PutMapping("/{workflowId}/waveless")
-    @Operation(summary = "Transition workflow to waveless processing")
-    public ResponseEntity<Void> transitionToWaveless(@PathVariable String workflowId) {
-        log.info("Transitioning workflow {} to waveless processing", workflowId);
-
-        TransitionToWavelessCommand command = TransitionToWavelessCommand.builder()
-            .workflowInstanceId(workflowId)
-            .build();
-
-        orchestrationUseCase.transitionToWaveless(command);
-
-        return ResponseEntity.ok().build();
-    }
-
-    @PostMapping("/rebalance")
-    @Operation(summary = "Rebalance system load across workflows")
-    public ResponseEntity<Void> rebalanceSystemLoad() {
-        log.info("Rebalancing system load");
-
-        RebalanceLoadCommand command = RebalanceLoadCommand.builder()
-            .targetUtilization(0.85) // 85% target utilization
-            .build();
-
-        orchestrationUseCase.rebalanceSystemLoad(command);
-
-        return ResponseEntity.ok().build();
-    }
-
-    @GetMapping("/health")
-    @Operation(summary = "Check orchestration engine health")
-    public ResponseEntity<OrchestrationHealthDto> getHealth() {
-        // This would typically check various health metrics
-        OrchestrationHealthDto health = OrchestrationHealthDto.builder()
-            .status("UP")
-            .activeWorkflows(42) // These would be real metrics
-            .queueDepth(15)
-            .averageExecutionTime(1250L)
-            .build();
-
-        return ResponseEntity.ok(health);
     }
 }
