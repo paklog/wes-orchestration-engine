@@ -1,0 +1,260 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wes-orchestration-engine
+  namespace: paklog-wes
+  labels:
+    app: wes-orchestration-engine
+    version: v1
+    component: orchestration
+    tier: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: wes-orchestration-engine
+  template:
+    metadata:
+      labels:
+        app: wes-orchestration-engine
+        version: v1
+        component: orchestration
+        tier: backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8090"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      serviceAccountName: wes-orchestration-engine
+      containers:
+      - name: wes-orchestration-engine
+        image: paklog/wes-orchestration-engine:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8090
+          name: http
+          protocol: TCP
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: "production"
+        - name: MONGODB_URI
+          valueFrom:
+            secretKeyRef:
+              name: wes-secrets
+              key: mongodb-uri
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka-cluster-kafka-bootstrap.kafka:9092"
+        - name: REDIS_HOST
+          value: "redis-master.redis"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: wes-secrets
+              key: redis-password
+        - name: JAVA_OPTS
+          value: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:InitialRAMPercentage=50.0 -XX:+UseG1GC"
+        - name: LOG_LEVEL_APP
+          value: "INFO"
+        - name: MAX_CONCURRENT_WORKFLOWS
+          value: "1000"
+        - name: WAVELESS_ENABLED
+          value: "true"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8090
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 3
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8090
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        - name: logs
+          mountPath: /app/logs
+      volumes:
+      - name: config
+        configMap:
+          name: wes-orchestration-config
+      - name: logs
+        emptyDir: {}
+      nodeSelector:
+        workload: general
+      tolerations:
+      - key: "workload"
+        operator: "Equal"
+        value: "general"
+        effect: "NoSchedule"
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - wes-orchestration-engine
+              topologyKey: kubernetes.io/hostname
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wes-orchestration-engine
+  namespace: paklog-wes
+  labels:
+    app: wes-orchestration-engine
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8090
+    targetPort: 8090
+    protocol: TCP
+    name: http
+  selector:
+    app: wes-orchestration-engine
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: wes-orchestration-engine
+  namespace: paklog-wes
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wes-orchestration-config
+  namespace: paklog-wes
+data:
+  application-k8s.yml: |
+    orchestration:
+      workflow:
+        default-timeout-ms: 300000
+        max-retries: 3
+      waveless:
+        batch-size: 20
+        processing-interval-ms: 500
+      system-load:
+        rebalance-interval-ms: 30000
+        target-utilization: 0.85
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: wes-secrets
+  namespace: paklog-wes
+type: Opaque
+stringData:
+  mongodb-uri: "mongodb://wes-user:password@mongodb-cluster:27017/wes_orchestration?authSource=admin"
+  redis-password: "your-redis-password-here"
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: wes-orchestration-engine-hpa
+  namespace: paklog-wes
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: wes-orchestration-engine
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: wes-orchestration-engine-pdb
+  namespace: paklog-wes
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: wes-orchestration-engine
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: wes-orchestration-engine-network-policy
+  namespace: paklog-wes
+spec:
+  podSelector:
+    matchLabels:
+      app: wes-orchestration-engine
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: paklog-wes
+    - namespaceSelector:
+        matchLabels:
+          name: paklog-core
+    ports:
+    - protocol: TCP
+      port: 8090
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: paklog-wes
+    - namespaceSelector:
+        matchLabels:
+          name: paklog-core
+    - namespaceSelector:
+        matchLabels:
+          name: kafka
+    - namespaceSelector:
+        matchLabels:
+          name: mongodb
+    - namespaceSelector:
+        matchLabels:
+          name: redis
+  - to:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53

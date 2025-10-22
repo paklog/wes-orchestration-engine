@@ -1,0 +1,228 @@
+spring:
+  application:
+    name: wes-orchestration-engine
+
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+
+  data:
+    mongodb:
+      uri: ${MONGODB_URI:mongodb://localhost:27017/wes_orchestration}
+      auto-index-creation: true
+
+  redis:
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD:}
+    timeout: ${REDIS_TIMEOUT:2000}
+    lettuce:
+      pool:
+        max-active: ${REDIS_POOL_MAX_ACTIVE:10}
+        max-idle: ${REDIS_POOL_MAX_IDLE:5}
+        min-idle: ${REDIS_POOL_MIN_IDLE:2}
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: io.cloudevents.kafka.CloudEventSerializer
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+    consumer:
+      group-id: wes-orchestration-engine
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: io.cloudevents.kafka.CloudEventDeserializer
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      properties:
+        isolation.level: read_committed
+    listener:
+      ack-mode: manual_immediate
+      concurrency: 3
+
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    deserialization:
+      fail-on-unknown-properties: false
+
+server:
+  port: ${SERVER_PORT:8090}
+  servlet:
+    context-path: /
+  error:
+    include-message: always
+    include-binding-errors: always
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,env,loggers,mappings
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+      environment: ${spring.profiles.active}
+    export:
+      prometheus:
+        enabled: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:1.0}
+
+# OpenAPI Documentation
+springdoc:
+  api-docs:
+    enabled: true
+    path: /v3/api-docs
+  swagger-ui:
+    enabled: true
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+
+# Application-specific configuration
+orchestration:
+  workflow:
+    default-timeout-ms: ${WORKFLOW_DEFAULT_TIMEOUT_MS:300000}  # 5 minutes
+    max-retries: ${WORKFLOW_MAX_RETRIES:3}
+    retry-delay-ms: ${WORKFLOW_RETRY_DELAY_MS:5000}
+    max-concurrent-workflows: ${MAX_CONCURRENT_WORKFLOWS:100}
+
+  waveless:
+    enabled: ${WAVELESS_ENABLED:true}
+    batch-size: ${WAVELESS_BATCH_SIZE:10}
+    processing-interval-ms: ${WAVELESS_PROCESSING_INTERVAL_MS:1000}
+
+  system-load:
+    rebalance-enabled: ${LOAD_REBALANCE_ENABLED:true}
+    rebalance-interval-ms: ${LOAD_REBALANCE_INTERVAL_MS:30000}  # 30 seconds
+    target-utilization: ${TARGET_UTILIZATION:0.85}  # 85%
+
+  events:
+    topics:
+      workflow-events: ${WORKFLOW_EVENTS_TOPIC:wes.workflow.events}
+      system-events: ${SYSTEM_EVENTS_TOPIC:wes.system.events}
+      integration-events: ${INTEGRATION_EVENTS_TOPIC:wes.integration.events}
+
+  integrations:
+    task-execution:
+      url: ${TASK_EXECUTION_URL:http://task-execution-service:8082}
+      timeout-ms: ${TASK_EXECUTION_TIMEOUT_MS:5000}
+    inventory:
+      url: ${INVENTORY_URL:http://inventory:8080}
+      timeout-ms: ${INVENTORY_TIMEOUT_MS:5000}
+    order-management:
+      url: ${ORDER_MANAGEMENT_URL:http://order-management:8080}
+      timeout-ms: ${ORDER_MANAGEMENT_TIMEOUT_MS:5000}
+    warehouse-operations:
+      url: ${WAREHOUSE_OPERATIONS_URL:http://warehouse-operations:8080}
+      timeout-ms: ${WAREHOUSE_OPERATIONS_TIMEOUT_MS:5000}
+
+# Resilience4j Configuration
+resilience4j:
+  circuitbreaker:
+    instances:
+      default:
+        register-health-indicator: true
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+        wait-duration-in-open-state: 30s
+        failure-rate-threshold: 50
+        event-consumer-buffer-size: 10
+  retry:
+    instances:
+      default:
+        max-attempts: 3
+        wait-duration: 1s
+        retry-exceptions:
+          - java.io.IOException
+          - java.net.SocketTimeoutException
+  bulkhead:
+    instances:
+      default:
+        max-concurrent-calls: 25
+        max-wait-duration: 1s
+
+# Logging Configuration
+logging:
+  level:
+    root: ${LOG_LEVEL_ROOT:INFO}
+    com.paklog.wes.orchestration: ${LOG_LEVEL_APP:DEBUG}
+    org.springframework.kafka: ${LOG_LEVEL_KAFKA:INFO}
+    org.springframework.data.mongodb: ${LOG_LEVEL_MONGO:INFO}
+    io.cloudevents: ${LOG_LEVEL_CLOUDEVENTS:INFO}
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+  file:
+    name: ${LOG_FILE:./logs/wes-orchestration-engine.log}
+    max-size: 100MB
+    max-history: 30
+
+---
+# Local Profile
+spring:
+  config:
+    activate:
+      on-profile: local
+
+  data:
+    mongodb:
+      uri: mongodb://localhost:27017/wes_orchestration_local
+
+logging:
+  level:
+    com.paklog.wes.orchestration: DEBUG
+
+---
+# Docker Profile
+spring:
+  config:
+    activate:
+      on-profile: docker
+
+  data:
+    mongodb:
+      uri: mongodb://mongodb:27017/wes_orchestration
+
+  kafka:
+    bootstrap-servers: kafka:9092
+
+  redis:
+    host: redis
+
+---
+# Production Profile
+spring:
+  config:
+    activate:
+      on-profile: production
+
+logging:
+  level:
+    root: WARN
+    com.paklog.wes.orchestration: INFO
+
+orchestration:
+  workflow:
+    max-concurrent-workflows: 1000
+
+management:
+  metrics:
+    export:
+      prometheus:
+        pushgateway:
+          enabled: true
+          base-url: ${PROMETHEUS_PUSHGATEWAY_URL}
