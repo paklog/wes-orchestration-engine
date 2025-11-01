@@ -1,0 +1,1323 @@
+asyncapi: 3.0.0
+info:
+  title: WES Orchestration Engine Events
+  version: 1.0.0
+  description: |
+    # WES Orchestration Engine Event Streams
+
+    This AsyncAPI specification documents all event-driven communication patterns for the Warehouse Execution System (WES) Orchestration Engine.
+
+    ## Architecture Overview
+
+    The orchestration engine uses Apache Kafka for event-driven communication following the CloudEvents specification. All events are published as CloudEvents v1.0, providing standardized event metadata and enabling seamless integration with cloud-native systems.
+
+    ## Event Categories
+
+    ### 1. Workflow Lifecycle Events
+    Events tracking the complete lifecycle of workflow instances from creation to completion or failure.
+
+    **Event Flow:**
+    ```
+    WorkflowStarted → WorkflowStepExecuted (multiple) → WorkflowCompleted
+                                                      ↓
+                                                   WorkflowFailed → WorkflowRetry
+                                                                  ↓
+                                                               WorkflowCompensationStarted → WorkflowCompensationCompleted
+    ```
+
+    ### 2. Workflow Control Events
+    Events for workflow state management and control operations.
+
+    **Operations:**
+    - Pause/Resume workflow execution
+    - Cancel workflow
+    - Retry failed workflows
+
+    ### 3. System Events
+    Infrastructure and operational events for monitoring and load management.
+
+    **Event Types:**
+    - System load rebalancing
+    - Waveless processing enablement
+    - Resource allocation changes
+
+    ## Message Format
+
+    All messages follow the CloudEvents v1.0 specification with additional domain-specific attributes:
+
+    **CloudEvents Envelope:**
+    - `specversion`: CloudEvents version (1.0)
+    - `type`: Event type (e.g., com.paklog.wes.orchestration.workflow.started)
+    - `source`: Event source URI
+    - `id`: Unique event identifier
+    - `time`: Event timestamp
+    - `datacontenttype`: Content type (application/json)
+    - `data`: Event payload
+
+    ## Event Ordering
+
+    - Events within a single workflow maintain causal ordering via Kafka partitioning
+    - Partition key: `workflowInstanceId` or `aggregateId`
+    - Ordering guarantee: Per-partition ordering is maintained
+    - Event sourcing: All workflow events can be replayed to reconstruct state
+
+    ## Consumer Patterns
+
+    ### Downstream Service Integration
+    Services subscribe to specific event types for workflow coordination:
+    - **Task Execution Service**: Listens for step execution events
+    - **Inventory Service**: Reacts to workflow started/completed events
+    - **Order Management**: Receives workflow completion notifications
+    - **Warehouse Operations**: Processes shipping and fulfillment events
+
+    ### Event Processing Guarantees
+    - **At-least-once delivery**: Consumers must handle idempotent processing
+    - **Manual acknowledgment**: Consumers control when messages are committed
+    - **Isolation level**: `read_committed` ensures only committed messages are consumed
+
+    ## Retry & Error Handling
+
+    - Failed event processing triggers automatic retries with exponential backoff
+    - Dead letter queue (DLQ) captures permanently failed messages
+    - Compensation events enable saga-based distributed transactions
+
+    ## Monitoring & Observability
+
+    All events include:
+    - Correlation IDs for distributed tracing
+    - Event versioning for schema evolution
+    - Timestamps for latency analysis
+    - Source service identification
+
+  contact:
+    name: Paklog Engineering Team
+    email: engineering@paklog.com
+    url: https://paklog.com
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+
+servers:
+  local:
+    host: localhost:9092
+    protocol: kafka
+    description: Local development Kafka broker
+    tags:
+      - name: env:local
+        description: Local development environment
+  docker:
+    host: kafka:9092
+    protocol: kafka
+    description: Docker environment Kafka broker
+    tags:
+      - name: env:docker
+        description: Docker containerized environment
+  production:
+    host: kafka.paklog.com:9092
+    protocol: kafka-secure
+    description: Production Kafka cluster
+    security:
+      - $ref: '#/components/securitySchemes/saslScram'
+    tags:
+      - name: env:production
+        description: Production environment
+
+defaultContentType: application/cloudevents+json
+
+channels:
+  workflowEvents:
+    address: physical-operations.wes-orchestration.workflow-events
+    messages:
+      workflowStarted:
+        $ref: '#/components/messages/WorkflowStartedEvent'
+      workflowCompleted:
+        $ref: '#/components/messages/WorkflowCompletedEvent'
+      workflowFailed:
+        $ref: '#/components/messages/WorkflowFailedEvent'
+      workflowStepExecuted:
+        $ref: '#/components/messages/WorkflowStepExecutedEvent'
+      workflowStepFailed:
+        $ref: '#/components/messages/WorkflowStepFailedEvent'
+      workflowPaused:
+        $ref: '#/components/messages/WorkflowPausedEvent'
+      workflowResumed:
+        $ref: '#/components/messages/WorkflowResumedEvent'
+      workflowCancelled:
+        $ref: '#/components/messages/WorkflowCancelledEvent'
+      workflowRetry:
+        $ref: '#/components/messages/WorkflowRetryEvent'
+      workflowCompensationStarted:
+        $ref: '#/components/messages/WorkflowCompensationStartedEvent'
+      workflowCompensationCompleted:
+        $ref: '#/components/messages/WorkflowCompensationCompletedEvent'
+    description: |
+      Primary channel for all workflow lifecycle and execution events.
+
+      **Partition Strategy:**
+      - Partitioned by `workflowInstanceId`
+      - Ensures ordered processing of events for the same workflow
+      - Number of partitions: 12 (configurable)
+
+      **Retention:**
+      - Retention period: 7 days
+      - Cleanup policy: delete
+      - Compression: snappy
+
+      **Consumers:**
+      - Order Management Service
+      - Inventory Service
+      - Task Execution Service
+      - Warehouse Operations Service
+      - Analytics & Reporting Service
+    tags:
+      - name: category:workflow
+        description: Workflow-related events
+      - name: critical:true
+        description: Critical business events
+
+  systemEvents:
+    address: physical-operations.wes-orchestration.system-events
+    messages:
+      systemLoadRebalanced:
+        $ref: '#/components/messages/SystemLoadRebalancedEvent'
+      wavelessProcessingEnabled:
+        $ref: '#/components/messages/WavelessProcessingEnabledEvent'
+    description: |
+      Channel for system-level operational events and load management.
+
+      **Partition Strategy:**
+      - Single partition (order preservation required)
+      - System-wide events don't require parallel processing
+
+      **Retention:**
+      - Retention period: 30 days
+      - Cleanup policy: delete
+      - Compression: snappy
+
+      **Consumers:**
+      - Operations Dashboard
+      - Monitoring & Alerting Service
+      - Capacity Planning Service
+    tags:
+      - name: category:system
+        description: System operational events
+      - name: critical:false
+        description: Non-critical monitoring events
+
+  integrationEvents:
+    address: physical-operations.wes-orchestration.integration-events
+    messages:
+      serviceIntegrationRequest:
+        $ref: '#/components/messages/ServiceIntegrationRequestEvent'
+      serviceIntegrationResponse:
+        $ref: '#/components/messages/ServiceIntegrationResponseEvent'
+    description: |
+      Channel for asynchronous service integration and inter-service communication.
+
+      **Partition Strategy:**
+      - Partitioned by correlation ID
+      - Number of partitions: 8
+
+      **Retention:**
+      - Retention period: 3 days
+      - Cleanup policy: delete
+      - Compression: lz4
+
+      **Consumers:**
+      - Task Execution Service
+      - Inventory Service
+      - Warehouse Operations Service
+    tags:
+      - name: category:integration
+        description: Service integration events
+
+operations:
+  publishWorkflowStarted:
+    action: send
+    channel:
+      $ref: '#/channels/workflowEvents'
+    summary: Publish workflow started event
+    description: |
+      Published when a new workflow instance begins execution.
+
+      **Trigger Conditions:**
+      - New workflow created via REST API
+      - Workflow retry initiated
+      - Scheduled workflow execution
+
+      **Downstream Impact:**
+      - Dependent services prepare resources
+      - Inventory reservations may be created
+      - Monitoring dashboards update
+    messages:
+      - $ref: '#/components/messages/WorkflowStartedEvent'
+    tags:
+      - name: lifecycle:start
+        description: Workflow lifecycle start event
+
+  publishWorkflowCompleted:
+    action: send
+    channel:
+      $ref: '#/channels/workflowEvents'
+    summary: Publish workflow completed event
+    description: |
+      Published when a workflow successfully completes all steps.
+
+      **Trigger Conditions:**
+      - All workflow steps completed successfully
+      - No errors or failures
+      - Output parameters finalized
+
+      **Downstream Impact:**
+      - Order status updated to "completed"
+      - Inventory committed
+      - Shipping notifications triggered
+      - Billing/invoicing processes initiated
+    messages:
+      - $ref: '#/components/messages/WorkflowCompletedEvent'
+    tags:
+      - name: lifecycle:complete
+        description: Workflow lifecycle completion event
+
+  publishWorkflowFailed:
+    action: send
+    channel:
+      $ref: '#/channels/workflowEvents'
+    summary: Publish workflow failed event
+    description: |
+      Published when a workflow fails due to unrecoverable errors.
+
+      **Trigger Conditions:**
+      - Step execution failure after max retries
+      - Timeout exceeded
+      - Business rule violation
+      - Dependency service unavailable
+
+      **Downstream Impact:**
+      - Order marked as failed
+      - Customer notifications sent
+      - Support tickets created
+      - Compensation may be triggered
+    messages:
+      - $ref: '#/components/messages/WorkflowFailedEvent'
+    tags:
+      - name: lifecycle:failure
+        description: Workflow lifecycle failure event
+
+  publishWorkflowStepExecuted:
+    action: send
+    channel:
+      $ref: '#/channels/workflowEvents'
+    summary: Publish workflow step executed event
+    description: |
+      Published when an individual workflow step completes successfully.
+
+      **Trigger Conditions:**
+      - Step completes without errors
+      - Output data captured
+      - Next step ready to execute
+
+      **Downstream Impact:**
+      - Progress tracking updated
+      - Step-specific actions triggered
+      - Service coordination continues
+    messages:
+      - $ref: '#/components/messages/WorkflowStepExecutedEvent'
+
+  publishWorkflowStepFailed:
+    action: send
+    channel:
+      $ref: '#/channels/workflowEvents'
+    summary: Publish workflow step failed event
+    description: |
+      Published when a workflow step fails.
+
+      **Trigger Conditions:**
+      - Service invocation error
+      - Validation failure
+      - Timeout
+      - Business logic error
+
+      **Downstream Impact:**
+      - Automatic retry if allowed
+      - Workflow may pause for investigation
+      - Alerts triggered
+    messages:
+      - $ref: '#/components/messages/WorkflowStepFailedEvent'
+
+  publishWorkflowPaused:
+    action: send
+    channel:
+      $ref: '#/channels/workflowEvents'
+    summary: Publish workflow paused event
+    description: |
+      Published when a workflow is paused by user or system.
+
+      **Use Cases:**
+      - Manual intervention required
+      - Inventory verification needed
+      - System maintenance
+      - Emergency stop
+    messages:
+      - $ref: '#/components/messages/WorkflowPausedEvent'
+
+  publishWorkflowResumed:
+    action: send
+    channel:
+      $ref: '#/channels/workflowEvents'
+    summary: Publish workflow resumed event
+    description: |
+      Published when a paused workflow is resumed.
+
+      **Trigger Conditions:**
+      - Manual resume via API
+      - Automated resume after resource availability
+      - Maintenance window completion
+    messages:
+      - $ref: '#/components/messages/WorkflowResumedEvent'
+
+  publishWorkflowCancelled:
+    action: send
+    channel:
+      $ref: '#/channels/workflowEvents'
+    summary: Publish workflow cancelled event
+    description: |
+      Published when a workflow is cancelled.
+
+      **Trigger Conditions:**
+      - User-requested cancellation
+      - Order cancellation
+      - Duplicate detection
+      - Invalid parameters
+
+      **Note:** Cancellation does not trigger compensation
+    messages:
+      - $ref: '#/components/messages/WorkflowCancelledEvent'
+
+  publishWorkflowRetry:
+    action: send
+    channel:
+      $ref: '#/channels/workflowEvents'
+    summary: Publish workflow retry event
+    description: |
+      Published when a failed workflow is being retried.
+
+      **Retry Logic:**
+      - Exponential backoff: 5s, 10s, 20s
+      - Maximum retries: 3 (configurable)
+      - Retry from point of failure
+    messages:
+      - $ref: '#/components/messages/WorkflowRetryEvent'
+
+  publishWorkflowCompensationStarted:
+    action: send
+    channel:
+      $ref: '#/channels/workflowEvents'
+    summary: Publish workflow compensation started event
+    description: |
+      Published when saga-based compensation begins.
+
+      **Compensation Process:**
+      - Executes in reverse order of steps
+      - Each step has defined compensation action
+      - Ensures eventual consistency
+    messages:
+      - $ref: '#/components/messages/WorkflowCompensationStartedEvent'
+
+  publishWorkflowCompensationCompleted:
+    action: send
+    channel:
+      $ref: '#/channels/workflowEvents'
+    summary: Publish workflow compensation completed event
+    description: |
+      Published when compensation successfully completes.
+
+      **Post-Compensation:**
+      - All resources released
+      - Inventory unreserved
+      - Tasks cancelled
+      - System state consistent
+    messages:
+      - $ref: '#/components/messages/WorkflowCompensationCompletedEvent'
+
+  publishSystemLoadRebalanced:
+    action: send
+    channel:
+      $ref: '#/channels/systemEvents'
+    summary: Publish system load rebalanced event
+    description: |
+      Published when system load balancing occurs.
+
+      **Triggers:**
+      - Periodic automatic rebalancing (every 30s)
+      - Manual rebalance via API
+      - System threshold exceeded
+    messages:
+      - $ref: '#/components/messages/SystemLoadRebalancedEvent'
+
+  publishWavelessProcessingEnabled:
+    action: send
+    channel:
+      $ref: '#/channels/systemEvents'
+    summary: Publish waveless processing enabled event
+    description: |
+      Published when waveless processing is enabled for a workflow.
+
+      **Impact:**
+      - Workflow added to priority queue
+      - Continuous processing begins
+      - No wave wait time
+    messages:
+      - $ref: '#/components/messages/WavelessProcessingEnabledEvent'
+
+  subscribeToWorkflowEvents:
+    action: receive
+    channel:
+      $ref: '#/channels/workflowEvents'
+    summary: Subscribe to workflow events
+    description: |
+      Subscribe to workflow lifecycle events for integration and monitoring.
+
+      **Consumer Configuration:**
+      - Group ID: Service-specific (e.g., "inventory-service")
+      - Auto offset reset: earliest
+      - Enable auto-commit: false (manual ack)
+      - Isolation level: read_committed
+
+      **Error Handling:**
+      - Implement idempotent processing
+      - Use dead letter queue for failures
+      - Monitor consumer lag
+    messages:
+      - $ref: '#/components/messages/WorkflowStartedEvent'
+      - $ref: '#/components/messages/WorkflowCompletedEvent'
+      - $ref: '#/components/messages/WorkflowFailedEvent'
+      - $ref: '#/components/messages/WorkflowStepExecutedEvent'
+      - $ref: '#/components/messages/WorkflowStepFailedEvent'
+
+  subscribeToSystemEvents:
+    action: receive
+    channel:
+      $ref: '#/channels/systemEvents'
+    summary: Subscribe to system events
+    description: |
+      Subscribe to system operational events for monitoring and alerting.
+
+      **Typical Consumers:**
+      - Monitoring dashboards
+      - Alerting systems
+      - Analytics platforms
+      - Capacity planning tools
+    messages:
+      - $ref: '#/components/messages/SystemLoadRebalancedEvent'
+      - $ref: '#/components/messages/WavelessProcessingEnabledEvent'
+
+components:
+  messages:
+    WorkflowStartedEvent:
+      name: WorkflowStartedEvent
+      title: Workflow Started Event
+      summary: Event emitted when a workflow starts execution
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/WorkflowStartedEventPayload'
+      examples:
+        - name: orderFulfillmentStarted
+          summary: Order Fulfillment Workflow Started
+          payload:
+            specversion: "1.0"
+            type: "com.paklog.wes.orchestration.workflow.started"
+            source: "https://paklog.com/orchestration/workflows"
+            id: "event-123e4567-e89b-12d3-a456-426614174000"
+            time: "2025-11-01T10:00:00Z"
+            datacontenttype: "application/json"
+            data:
+              eventId: "event-123e4567-e89b-12d3-a456-426614174000"
+              eventType: "WorkflowStarted"
+              occurredAt: "2025-11-01T10:00:00Z"
+              aggregateId: "550e8400-e29b-41d4-a716-446655440000"
+              version: 1
+              workflowInstanceId: "550e8400-e29b-41d4-a716-446655440000"
+              workflowDefinitionId: "order-fulfillment-v2.3"
+              workflowType: "ORDER_FULFILLMENT"
+              correlationId: "order-12345"
+              startedAt: "2025-11-01T10:00:00Z"
+              triggeredBy: "order-management-service"
+      tags:
+        - name: event:workflow
+        - name: lifecycle:started
+
+    WorkflowCompletedEvent:
+      name: WorkflowCompletedEvent
+      title: Workflow Completed Event
+      summary: Event emitted when a workflow completes successfully
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/WorkflowCompletedEventPayload'
+      examples:
+        - name: orderFulfillmentCompleted
+          summary: Order Fulfillment Completed
+          payload:
+            specversion: "1.0"
+            type: "com.paklog.wes.orchestration.workflow.completed"
+            source: "https://paklog.com/orchestration/workflows"
+            id: "event-223e4567-e89b-12d3-a456-426614174001"
+            time: "2025-11-01T10:05:30Z"
+            datacontenttype: "application/json"
+            data:
+              eventId: "event-223e4567-e89b-12d3-a456-426614174001"
+              eventType: "WorkflowCompleted"
+              occurredAt: "2025-11-01T10:05:30Z"
+              aggregateId: "550e8400-e29b-41d4-a716-446655440000"
+              version: 12
+              workflowInstanceId: "550e8400-e29b-41d4-a716-446655440000"
+              completedAt: "2025-11-01T10:05:30Z"
+              executionDurationMs: 330000
+              totalSteps: 5
+              outputParameters:
+                trackingNumber: "TRK-987654321"
+                shipmentId: "SHIP-001"
+                carrier: "UPS"
+      tags:
+        - name: event:workflow
+        - name: lifecycle:completed
+
+    WorkflowFailedEvent:
+      name: WorkflowFailedEvent
+      title: Workflow Failed Event
+      summary: Event emitted when a workflow execution fails
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/WorkflowFailedEventPayload'
+      examples:
+        - name: inventoryUnavailable
+          summary: Workflow Failed - Inventory Unavailable
+          payload:
+            specversion: "1.0"
+            type: "com.paklog.wes.orchestration.workflow.failed"
+            source: "https://paklog.com/orchestration/workflows"
+            id: "event-323e4567-e89b-12d3-a456-426614174002"
+            time: "2025-11-01T10:02:15Z"
+            datacontenttype: "application/json"
+            data:
+              eventId: "event-323e4567-e89b-12d3-a456-426614174002"
+              eventType: "WorkflowFailed"
+              occurredAt: "2025-11-01T10:02:15Z"
+              aggregateId: "550e8400-e29b-41d4-a716-446655440001"
+              version: 4
+              workflowInstanceId: "550e8400-e29b-41d4-a716-446655440001"
+              failedAt: "2025-11-01T10:02:15Z"
+              failedStepId: "step-1"
+              errorCode: "INVENTORY_UNAVAILABLE"
+              errorMessage: "Insufficient inventory for SKU-001. Required: 5, Available: 2"
+              retryable: true
+      tags:
+        - name: event:workflow
+        - name: lifecycle:failed
+
+    WorkflowStepExecutedEvent:
+      name: WorkflowStepExecutedEvent
+      title: Workflow Step Executed Event
+      summary: Event emitted when a workflow step is successfully executed
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/WorkflowStepExecutedEventPayload'
+      examples:
+        - name: inventoryValidated
+          summary: Inventory Validation Step Completed
+          payload:
+            specversion: "1.0"
+            type: "com.paklog.wes.orchestration.workflow.step.executed"
+            source: "https://paklog.com/orchestration/workflows"
+            id: "event-423e4567-e89b-12d3-a456-426614174003"
+            time: "2025-11-01T10:00:02Z"
+            datacontenttype: "application/json"
+            data:
+              eventId: "event-423e4567-e89b-12d3-a456-426614174003"
+              eventType: "WorkflowStepExecuted"
+              occurredAt: "2025-11-01T10:00:02Z"
+              aggregateId: "550e8400-e29b-41d4-a716-446655440000"
+              version: 2
+              workflowInstanceId: "550e8400-e29b-41d4-a716-446655440000"
+              stepId: "step-1"
+              stepName: "Validate Inventory"
+              executedAt: "2025-11-01T10:00:02Z"
+              result:
+                success: true
+                outputData:
+                  available: true
+                  reservationId: "RES-123"
+                  location: "A1-B2-C3"
+                executionTimeMs: 2000
+
+    WorkflowStepFailedEvent:
+      name: WorkflowStepFailedEvent
+      title: Workflow Step Failed Event
+      summary: Event emitted when a workflow step fails
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/WorkflowStepFailedEventPayload'
+      examples:
+        - name: serviceTimeout
+          summary: Service Timeout Failure
+          payload:
+            specversion: "1.0"
+            type: "com.paklog.wes.orchestration.workflow.step.failed"
+            source: "https://paklog.com/orchestration/workflows"
+            id: "event-523e4567-e89b-12d3-a456-426614174004"
+            time: "2025-11-01T10:01:30Z"
+            datacontenttype: "application/json"
+            data:
+              eventId: "event-523e4567-e89b-12d3-a456-426614174004"
+              eventType: "WorkflowStepFailed"
+              occurredAt: "2025-11-01T10:01:30Z"
+              aggregateId: "550e8400-e29b-41d4-a716-446655440002"
+              workflowInstanceId: "550e8400-e29b-41d4-a716-446655440002"
+              stepId: "step-3"
+              stepName: "Create Shipment"
+              failedAt: "2025-11-01T10:01:30Z"
+              errorCode: "SERVICE_TIMEOUT"
+              errorMessage: "warehouse-operations service timeout after 5000ms"
+              retryAttempt: 1
+
+    WorkflowPausedEvent:
+      name: WorkflowPausedEvent
+      title: Workflow Paused Event
+      summary: Event emitted when a workflow is paused
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/WorkflowPausedEventPayload'
+      examples:
+        - name: manualPause
+          summary: Manual Workflow Pause
+          payload:
+            specversion: "1.0"
+            type: "com.paklog.wes.orchestration.workflow.paused"
+            source: "https://paklog.com/orchestration/workflows"
+            id: "event-623e4567-e89b-12d3-a456-426614174005"
+            time: "2025-11-01T10:03:00Z"
+            datacontenttype: "application/json"
+            data:
+              eventId: "event-623e4567-e89b-12d3-a456-426614174005"
+              eventType: "WorkflowPaused"
+              occurredAt: "2025-11-01T10:03:00Z"
+              aggregateId: "550e8400-e29b-41d4-a716-446655440003"
+              workflowInstanceId: "550e8400-e29b-41d4-a716-446655440003"
+              pausedAt: "2025-11-01T10:03:00Z"
+              reason: "Manual pause for inventory verification"
+
+    WorkflowResumedEvent:
+      name: WorkflowResumedEvent
+      title: Workflow Resumed Event
+      summary: Event emitted when a paused workflow is resumed
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/WorkflowResumedEventPayload'
+      examples:
+        - name: manualResume
+          summary: Manual Workflow Resume
+          payload:
+            specversion: "1.0"
+            type: "com.paklog.wes.orchestration.workflow.resumed"
+            source: "https://paklog.com/orchestration/workflows"
+            id: "event-723e4567-e89b-12d3-a456-426614174006"
+            time: "2025-11-01T10:05:00Z"
+            datacontenttype: "application/json"
+            data:
+              eventId: "event-723e4567-e89b-12d3-a456-426614174006"
+              eventType: "WorkflowResumed"
+              occurredAt: "2025-11-01T10:05:00Z"
+              aggregateId: "550e8400-e29b-41d4-a716-446655440003"
+              workflowInstanceId: "550e8400-e29b-41d4-a716-446655440003"
+              resumedAt: "2025-11-01T10:05:00Z"
+
+    WorkflowCancelledEvent:
+      name: WorkflowCancelledEvent
+      title: Workflow Cancelled Event
+      summary: Event emitted when a workflow is cancelled
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/WorkflowCancelledEventPayload'
+      examples:
+        - name: orderCancelled
+          summary: Order Cancellation
+          payload:
+            specversion: "1.0"
+            type: "com.paklog.wes.orchestration.workflow.cancelled"
+            source: "https://paklog.com/orchestration/workflows"
+            id: "event-823e4567-e89b-12d3-a456-426614174007"
+            time: "2025-11-01T10:04:00Z"
+            datacontenttype: "application/json"
+            data:
+              eventId: "event-823e4567-e89b-12d3-a456-426614174007"
+              eventType: "WorkflowCancelled"
+              occurredAt: "2025-11-01T10:04:00Z"
+              aggregateId: "550e8400-e29b-41d4-a716-446655440004"
+              workflowInstanceId: "550e8400-e29b-41d4-a716-446655440004"
+              cancelledAt: "2025-11-01T10:04:00Z"
+              reason: "Customer requested order cancellation"
+
+    WorkflowRetryEvent:
+      name: WorkflowRetryEvent
+      title: Workflow Retry Event
+      summary: Event emitted when a failed workflow is being retried
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/WorkflowRetryEventPayload'
+      examples:
+        - name: automaticRetry
+          summary: Automatic Retry After Failure
+          payload:
+            specversion: "1.0"
+            type: "com.paklog.wes.orchestration.workflow.retry"
+            source: "https://paklog.com/orchestration/workflows"
+            id: "event-923e4567-e89b-12d3-a456-426614174008"
+            time: "2025-11-01T10:02:25Z"
+            datacontenttype: "application/json"
+            data:
+              eventId: "event-923e4567-e89b-12d3-a456-426614174008"
+              eventType: "WorkflowRetry"
+              occurredAt: "2025-11-01T10:02:25Z"
+              aggregateId: "550e8400-e29b-41d4-a716-446655440001"
+              workflowInstanceId: "550e8400-e29b-41d4-a716-446655440001"
+              retryAttempt: 1
+              maxRetries: 3
+              nextRetryAt: "2025-11-01T10:02:30Z"
+
+    WorkflowCompensationStartedEvent:
+      name: WorkflowCompensationStartedEvent
+      title: Workflow Compensation Started Event
+      summary: Event emitted when workflow compensation (rollback) begins
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/WorkflowCompensationStartedEventPayload'
+      examples:
+        - name: sagaCompensation
+          summary: Saga Compensation Initiated
+          payload:
+            specversion: "1.0"
+            type: "com.paklog.wes.orchestration.workflow.compensation.started"
+            source: "https://paklog.com/orchestration/workflows"
+            id: "event-a23e4567-e89b-12d3-a456-426614174009"
+            time: "2025-11-01T10:03:00Z"
+            datacontenttype: "application/json"
+            data:
+              eventId: "event-a23e4567-e89b-12d3-a456-426614174009"
+              eventType: "WorkflowCompensationStarted"
+              occurredAt: "2025-11-01T10:03:00Z"
+              aggregateId: "550e8400-e29b-41d4-a716-446655440005"
+              workflowInstanceId: "550e8400-e29b-41d4-a716-446655440005"
+              startedAt: "2025-11-01T10:03:00Z"
+              reason: "Critical step failure - rolling back completed steps"
+
+    WorkflowCompensationCompletedEvent:
+      name: WorkflowCompensationCompletedEvent
+      title: Workflow Compensation Completed Event
+      summary: Event emitted when workflow compensation completes
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/WorkflowCompensationCompletedEventPayload'
+      examples:
+        - name: compensationSuccess
+          summary: Successful Compensation
+          payload:
+            specversion: "1.0"
+            type: "com.paklog.wes.orchestration.workflow.compensation.completed"
+            source: "https://paklog.com/orchestration/workflows"
+            id: "event-b23e4567-e89b-12d3-a456-426614174010"
+            time: "2025-11-01T10:03:30Z"
+            datacontenttype: "application/json"
+            data:
+              eventId: "event-b23e4567-e89b-12d3-a456-426614174010"
+              eventType: "WorkflowCompensationCompleted"
+              occurredAt: "2025-11-01T10:03:30Z"
+              aggregateId: "550e8400-e29b-41d4-a716-446655440005"
+              workflowInstanceId: "550e8400-e29b-41d4-a716-446655440005"
+              completedAt: "2025-11-01T10:03:30Z"
+              compensatedSteps: 3
+
+    SystemLoadRebalancedEvent:
+      name: SystemLoadRebalancedEvent
+      title: System Load Rebalanced Event
+      summary: Event emitted when system load is rebalanced
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/SystemLoadRebalancedEventPayload'
+      examples:
+        - name: periodicRebalance
+          summary: Periodic Load Rebalancing
+          payload:
+            specversion: "1.0"
+            type: "com.paklog.wes.orchestration.system.load.rebalanced"
+            source: "https://paklog.com/orchestration/system"
+            id: "event-c23e4567-e89b-12d3-a456-426614174011"
+            time: "2025-11-01T10:00:30Z"
+            datacontenttype: "application/json"
+            data:
+              eventId: "event-c23e4567-e89b-12d3-a456-426614174011"
+              eventType: "SystemLoadRebalanced"
+              occurredAt: "2025-11-01T10:00:30Z"
+              aggregateId: "system-load-001"
+              previousUtilization: 0.92
+              currentUtilization: 0.78
+              targetUtilization: 0.85
+              workflowsRebalanced: 15
+
+    WavelessProcessingEnabledEvent:
+      name: WavelessProcessingEnabledEvent
+      title: Waveless Processing Enabled Event
+      summary: Event emitted when waveless processing is enabled
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/WavelessProcessingEnabledEventPayload'
+      examples:
+        - name: wavelessEnabled
+          summary: Waveless Processing Activated
+          payload:
+            specversion: "1.0"
+            type: "com.paklog.wes.orchestration.waveless.enabled"
+            source: "https://paklog.com/orchestration/workflows"
+            id: "event-d23e4567-e89b-12d3-a456-426614174012"
+            time: "2025-11-01T10:00:05Z"
+            datacontenttype: "application/json"
+            data:
+              eventId: "event-d23e4567-e89b-12d3-a456-426614174012"
+              eventType: "WavelessProcessingEnabled"
+              occurredAt: "2025-11-01T10:00:05Z"
+              aggregateId: "550e8400-e29b-41d4-a716-446655440000"
+              workflowInstanceId: "550e8400-e29b-41d4-a716-446655440000"
+              enabledAt: "2025-11-01T10:00:05Z"
+
+    ServiceIntegrationRequestEvent:
+      name: ServiceIntegrationRequestEvent
+      title: Service Integration Request Event
+      summary: Event for requesting service integration operations
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/ServiceIntegrationRequestEventPayload'
+
+    ServiceIntegrationResponseEvent:
+      name: ServiceIntegrationResponseEvent
+      title: Service Integration Response Event
+      summary: Event for service integration operation responses
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/ServiceIntegrationResponseEventPayload'
+
+  schemas:
+    CloudEventEnvelope:
+      type: object
+      required:
+        - specversion
+        - type
+        - source
+        - id
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          description: CloudEvents specification version
+          const: "1.0"
+        type:
+          type: string
+          description: Event type identifier
+          example: "com.paklog.wes.orchestration.workflow.started"
+        source:
+          type: string
+          format: uri
+          description: Event source URI
+          example: "https://paklog.com/orchestration/workflows"
+        id:
+          type: string
+          format: uuid
+          description: Unique event identifier
+          example: "123e4567-e89b-12d3-a456-426614174000"
+        time:
+          type: string
+          format: date-time
+          description: Event timestamp
+          example: "2025-11-01T10:00:00Z"
+        datacontenttype:
+          type: string
+          description: Content type of data payload
+          const: "application/json"
+        subject:
+          type: string
+          description: Subject of the event in context
+          example: "workflow/550e8400-e29b-41d4-a716-446655440000"
+        data:
+          type: object
+          description: Event-specific payload
+
+    DomainEventBase:
+      type: object
+      required:
+        - eventId
+        - eventType
+        - occurredAt
+        - aggregateId
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          description: Unique event identifier
+        eventType:
+          type: string
+          description: Type of domain event
+        occurredAt:
+          type: string
+          format: date-time
+          description: When the event occurred
+        aggregateId:
+          type: string
+          description: ID of the aggregate that generated this event
+        version:
+          type: integer
+          format: int64
+          description: Event version for event sourcing
+          example: 1
+
+    WorkflowStartedEventPayload:
+      allOf:
+        - $ref: '#/components/schemas/DomainEventBase'
+        - type: object
+          required:
+            - workflowInstanceId
+            - workflowDefinitionId
+            - workflowType
+            - startedAt
+          properties:
+            workflowInstanceId:
+              type: string
+              format: uuid
+              description: Unique workflow instance ID
+            workflowDefinitionId:
+              type: string
+              description: Workflow definition ID
+            workflowType:
+              type: string
+              description: Type of workflow
+              enum: [ORDER_FULFILLMENT, RECEIVING, PUTAWAY, PICKING, PACKING, SHIPPING, RETURNS_PROCESSING, INVENTORY_TRANSFER, CYCLE_COUNT, REPLENISHMENT, CROSS_DOCKING, WAVE_PROCESSING, WAVELESS_PROCESSING, QUALITY_CHECK, VALUE_ADDED_SERVICE]
+            correlationId:
+              type: string
+              description: External correlation ID
+            startedAt:
+              type: string
+              format: date-time
+              description: When workflow started
+            triggeredBy:
+              type: string
+              description: Who/what triggered this workflow
+
+    WorkflowCompletedEventPayload:
+      allOf:
+        - $ref: '#/components/schemas/DomainEventBase'
+        - type: object
+          required:
+            - workflowInstanceId
+            - completedAt
+            - executionDurationMs
+          properties:
+            workflowInstanceId:
+              type: string
+              format: uuid
+            completedAt:
+              type: string
+              format: date-time
+            executionDurationMs:
+              type: integer
+              format: int64
+              description: Total execution time in milliseconds
+            totalSteps:
+              type: integer
+              description: Total number of steps executed
+            outputParameters:
+              type: object
+              additionalProperties: true
+              description: Workflow output data
+
+    WorkflowFailedEventPayload:
+      allOf:
+        - $ref: '#/components/schemas/DomainEventBase'
+        - type: object
+          required:
+            - workflowInstanceId
+            - failedAt
+            - errorMessage
+          properties:
+            workflowInstanceId:
+              type: string
+              format: uuid
+            failedAt:
+              type: string
+              format: date-time
+            failedStepId:
+              type: string
+              description: ID of step that caused failure
+            errorCode:
+              type: string
+              description: Error code
+            errorMessage:
+              type: string
+              description: Error message
+            retryable:
+              type: boolean
+              description: Whether failure is retryable
+
+    WorkflowStepExecutedEventPayload:
+      allOf:
+        - $ref: '#/components/schemas/DomainEventBase'
+        - type: object
+          required:
+            - workflowInstanceId
+            - stepId
+            - stepName
+            - executedAt
+            - result
+          properties:
+            workflowInstanceId:
+              type: string
+              format: uuid
+            stepId:
+              type: string
+            stepName:
+              type: string
+            executedAt:
+              type: string
+              format: date-time
+            result:
+              type: object
+              properties:
+                success:
+                  type: boolean
+                outputData:
+                  type: object
+                  additionalProperties: true
+                executionTimeMs:
+                  type: integer
+                  format: int64
+
+    WorkflowStepFailedEventPayload:
+      allOf:
+        - $ref: '#/components/schemas/DomainEventBase'
+        - type: object
+          required:
+            - workflowInstanceId
+            - stepId
+            - stepName
+            - failedAt
+          properties:
+            workflowInstanceId:
+              type: string
+              format: uuid
+            stepId:
+              type: string
+            stepName:
+              type: string
+            failedAt:
+              type: string
+              format: date-time
+            errorCode:
+              type: string
+            errorMessage:
+              type: string
+            retryAttempt:
+              type: integer
+
+    WorkflowPausedEventPayload:
+      allOf:
+        - $ref: '#/components/schemas/DomainEventBase'
+        - type: object
+          required:
+            - workflowInstanceId
+            - pausedAt
+          properties:
+            workflowInstanceId:
+              type: string
+              format: uuid
+            pausedAt:
+              type: string
+              format: date-time
+            reason:
+              type: string
+
+    WorkflowResumedEventPayload:
+      allOf:
+        - $ref: '#/components/schemas/DomainEventBase'
+        - type: object
+          required:
+            - workflowInstanceId
+            - resumedAt
+          properties:
+            workflowInstanceId:
+              type: string
+              format: uuid
+            resumedAt:
+              type: string
+              format: date-time
+
+    WorkflowCancelledEventPayload:
+      allOf:
+        - $ref: '#/components/schemas/DomainEventBase'
+        - type: object
+          required:
+            - workflowInstanceId
+            - cancelledAt
+          properties:
+            workflowInstanceId:
+              type: string
+              format: uuid
+            cancelledAt:
+              type: string
+              format: date-time
+            reason:
+              type: string
+
+    WorkflowRetryEventPayload:
+      allOf:
+        - $ref: '#/components/schemas/DomainEventBase'
+        - type: object
+          required:
+            - workflowInstanceId
+            - retryAttempt
+            - maxRetries
+          properties:
+            workflowInstanceId:
+              type: string
+              format: uuid
+            retryAttempt:
+              type: integer
+            maxRetries:
+              type: integer
+            nextRetryAt:
+              type: string
+              format: date-time
+
+    WorkflowCompensationStartedEventPayload:
+      allOf:
+        - $ref: '#/components/schemas/DomainEventBase'
+        - type: object
+          required:
+            - workflowInstanceId
+            - startedAt
+          properties:
+            workflowInstanceId:
+              type: string
+              format: uuid
+            startedAt:
+              type: string
+              format: date-time
+            reason:
+              type: string
+
+    WorkflowCompensationCompletedEventPayload:
+      allOf:
+        - $ref: '#/components/schemas/DomainEventBase'
+        - type: object
+          required:
+            - workflowInstanceId
+            - completedAt
+          properties:
+            workflowInstanceId:
+              type: string
+              format: uuid
+            completedAt:
+              type: string
+              format: date-time
+            compensatedSteps:
+              type: integer
+              description: Number of steps compensated
+
+    SystemLoadRebalancedEventPayload:
+      allOf:
+        - $ref: '#/components/schemas/DomainEventBase'
+        - type: object
+          required:
+            - previousUtilization
+            - currentUtilization
+            - targetUtilization
+          properties:
+            previousUtilization:
+              type: number
+              format: double
+              description: System utilization before rebalancing
+            currentUtilization:
+              type: number
+              format: double
+              description: System utilization after rebalancing
+            targetUtilization:
+              type: number
+              format: double
+              description: Target utilization goal
+            workflowsRebalanced:
+              type: integer
+              description: Number of workflows affected
+
+    WavelessProcessingEnabledEventPayload:
+      allOf:
+        - $ref: '#/components/schemas/DomainEventBase'
+        - type: object
+          required:
+            - workflowInstanceId
+            - enabledAt
+          properties:
+            workflowInstanceId:
+              type: string
+              format: uuid
+            enabledAt:
+              type: string
+              format: date-time
+
+    ServiceIntegrationRequestEventPayload:
+      allOf:
+        - $ref: '#/components/schemas/DomainEventBase'
+        - type: object
+          required:
+            - requestId
+            - targetService
+            - operation
+          properties:
+            requestId:
+              type: string
+              format: uuid
+            targetService:
+              type: string
+            operation:
+              type: string
+            payload:
+              type: object
+              additionalProperties: true
+
+    ServiceIntegrationResponseEventPayload:
+      allOf:
+        - $ref: '#/components/schemas/DomainEventBase'
+        - type: object
+          required:
+            - requestId
+            - success
+          properties:
+            requestId:
+              type: string
+              format: uuid
+            success:
+              type: boolean
+            responseData:
+              type: object
+              additionalProperties: true
+            errorMessage:
+              type: string
+
+  securitySchemes:
+    saslScram:
+      type: scramSha256
+      description: SASL/SCRAM-SHA-256 authentication for Kafka
+
+tags:
+  - name: workflow
+    description: Workflow lifecycle events
+  - name: system
+    description: System operational events
+  - name: integration
+    description: Service integration events

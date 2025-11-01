@@ -1,0 +1,1187 @@
+openapi: 3.0.3
+info:
+  title: WES Orchestration Engine API
+  version: 1.0.0
+  description: |
+    # Warehouse Execution System (WES) Orchestration Engine
+
+    The WES Orchestration Engine is a sophisticated microservice responsible for orchestrating complex warehouse workflows with support for:
+
+    - **Multi-step Workflow Orchestration**: Coordinate complex warehouse operations across multiple services
+    - **Waveless Processing**: Enable continuous order fulfillment without traditional wave constraints
+    - **Saga Pattern Implementation**: Ensure data consistency with compensation/rollback capabilities
+    - **Dynamic Load Balancing**: Optimize system resources based on real-time utilization
+    - **Priority-based Execution**: Support high-priority workflows with intelligent scheduling
+    - **Retry & Fault Tolerance**: Automatic retry mechanisms with exponential backoff
+    - **Real-time Monitoring**: Comprehensive health checks and metrics
+
+    ## Supported Workflow Types
+
+    The engine supports various warehouse workflow types:
+    - Order Fulfillment
+    - Receiving & Putaway
+    - Picking & Packing
+    - Shipping Operations
+    - Returns Processing
+    - Inventory Transfers
+    - Cycle Counting
+    - Replenishment
+    - Cross-docking
+    - Quality Checks
+    - Value-added Services
+
+    ## Event-Driven Architecture
+
+    All workflow state changes are published as CloudEvents to Kafka topics, enabling real-time integration with other warehouse systems.
+
+    ## Getting Started
+
+    1. Create a workflow by POSTing to `/api/v1/workflows`
+    2. Monitor workflow progress with GET `/api/v1/workflows/{id}`
+    3. Control workflow execution using pause/resume/cancel/retry operations
+    4. Enable waveless processing for supported workflows
+    5. Monitor system health via `/api/v1/orchestration/health`
+
+  contact:
+    name: Paklog Engineering Team
+    email: engineering@paklog.com
+    url: https://paklog.com
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+
+servers:
+  - url: http://localhost:8090
+    description: Local development server
+  - url: http://wes-orchestration-engine:8090
+    description: Docker environment
+  - url: https://api.paklog.com/orchestration
+    description: Production environment
+
+tags:
+  - name: Workflow Orchestration
+    description: Core workflow management operations
+  - name: Waveless Processing
+    description: Operations for waveless order fulfillment
+  - name: Health & Metrics
+    description: System health monitoring and metrics
+
+paths:
+  /api/v1/workflows:
+    post:
+      tags:
+        - Workflow Orchestration
+      summary: Start a new workflow instance
+      description: |
+        Creates and starts a new workflow instance. The workflow will begin execution immediately unless system load prevents it.
+
+        **Key Features:**
+        - Supports all warehouse workflow types (picking, packing, receiving, etc.)
+        - Optional waveless processing enablement
+        - Configurable retry policies and timeouts
+        - Priority-based execution
+        - Custom input parameters for workflow context
+
+        **Workflow Lifecycle:**
+        1. PENDING → Workflow created, awaiting execution
+        2. EXECUTING → Workflow is actively running
+        3. COMPLETED/FAILED/CANCELLED → Terminal states
+
+        **Example Use Cases:**
+        - Start an order fulfillment workflow when a new order is received
+        - Initiate a replenishment workflow when inventory drops below threshold
+        - Trigger a returns processing workflow when items are received back
+      operationId: startWorkflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartWorkflowRequest'
+            examples:
+              orderFulfillment:
+                summary: Order Fulfillment Workflow
+                description: Complete end-to-end order fulfillment with waveless processing
+                value:
+                  workflowDefinitionId: "order-fulfillment-v2.3"
+                  workflowName: "Order #12345 Fulfillment"
+                  workflowType: "ORDER_FULFILLMENT"
+                  triggeredBy: "order-management-service"
+                  correlationId: "order-12345"
+                  inputParameters:
+                    orderId: "12345"
+                    customerId: "CUST-789"
+                    warehouseId: "WH-001"
+                    priority: "express"
+                    items:
+                      - sku: "SKU-001"
+                        quantity: 2
+                        location: "A1-B2-C3"
+                      - sku: "SKU-002"
+                        quantity: 1
+                        location: "A2-B3-C4"
+                  enableWaveless: true
+                  maxRetries: 3
+                  timeoutMs: 300000
+                  priority: "HIGH"
+              pickingWorkflow:
+                summary: Picking Workflow
+                description: Basic picking workflow for warehouse operations
+                value:
+                  workflowDefinitionId: "picking-standard-v1.0"
+                  workflowName: "Wave #456 Picking"
+                  workflowType: "PICKING"
+                  triggeredBy: "warehouse-operations"
+                  correlationId: "wave-456"
+                  inputParameters:
+                    waveId: "456"
+                    zone: "Zone-A"
+                    pickingStrategy: "batch"
+                    orderCount: 25
+                  enableWaveless: false
+                  maxRetries: 2
+                  timeoutMs: 600000
+                  priority: "NORMAL"
+              replenishment:
+                summary: Replenishment Workflow
+                description: Automated inventory replenishment
+                value:
+                  workflowDefinitionId: "replenishment-auto-v1.5"
+                  workflowName: "Auto Replenishment - Zone A"
+                  workflowType: "REPLENISHMENT"
+                  triggeredBy: "inventory-management"
+                  inputParameters:
+                    zone: "Zone-A"
+                    sku: "SKU-001"
+                    currentQuantity: 5
+                    targetQuantity: 100
+                    sourceLocation: "BULK-001"
+                    destinationLocation: "A1-B2-C3"
+                  priority: "LOW"
+      responses:
+        '201':
+          description: Workflow created successfully
+          headers:
+            Location:
+              description: URI of the created workflow
+              schema:
+                type: string
+                example: /api/v1/workflows/550e8400-e29b-41d4-a716-446655440000
+          content:
+            application/json:
+              schema:
+                type: string
+                format: uuid
+                description: Unique identifier of the created workflow instance
+                example: "550e8400-e29b-41d4-a716-446655440000"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/workflows/{id}:
+    get:
+      tags:
+        - Workflow Orchestration
+      summary: Get workflow status
+      description: |
+        Retrieves the current state and detailed information about a workflow instance.
+
+        **Returned Information:**
+        - Current execution status (PENDING, EXECUTING, COMPLETED, etc.)
+        - Progress percentage based on completed steps
+        - Execution timeline (start time, completion time, duration)
+        - All step executions with individual status and timing
+        - Input/output parameters
+        - Error information if failed
+        - Retry count and configuration
+
+        **Use Cases:**
+        - Monitor workflow progress in real-time
+        - Debug failed workflows
+        - Audit workflow execution history
+        - Display status to end users (e.g., order tracking)
+      operationId: getWorkflow
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+      responses:
+        '200':
+          description: Workflow details retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowResponse'
+              examples:
+                executingWorkflow:
+                  summary: Executing Workflow
+                  description: Workflow currently in progress
+                  value:
+                    id: "550e8400-e29b-41d4-a716-446655440000"
+                    workflowName: "Order #12345 Fulfillment"
+                    workflowType: "ORDER_FULFILLMENT"
+                    status: "EXECUTING"
+                    priority: "HIGH"
+                    correlationId: "order-12345"
+                    inputParameters:
+                      orderId: "12345"
+                      customerId: "CUST-789"
+                      warehouseId: "WH-001"
+                    outputParameters: null
+                    steps:
+                      - stepId: "step-1"
+                        stepName: "Validate Inventory"
+                        status: "COMPLETED"
+                        serviceName: "inventory-service"
+                        operation: "validateStock"
+                        outputData:
+                          available: true
+                          reservationId: "RES-123"
+                        retryCount: 0
+                        startedAt: "2025-11-01T10:00:00Z"
+                        completedAt: "2025-11-01T10:00:02Z"
+                        executionDurationMs: 2000
+                        errorMessage: null
+                      - stepId: "step-2"
+                        stepName: "Create Pick Task"
+                        status: "EXECUTING"
+                        serviceName: "task-execution-service"
+                        operation: "createPickTask"
+                        outputData: null
+                        retryCount: 0
+                        startedAt: "2025-11-01T10:00:02Z"
+                        completedAt: null
+                        executionDurationMs: null
+                        errorMessage: null
+                    progressPercentage: 33.33
+                    retryCount: 0
+                    maxRetries: 3
+                    startedAt: "2025-11-01T10:00:00Z"
+                    completedAt: null
+                    executionDurationMs: null
+                    createdAt: "2025-11-01T09:59:58Z"
+                    updatedAt: "2025-11-01T10:00:02Z"
+                completedWorkflow:
+                  summary: Completed Workflow
+                  description: Successfully completed workflow
+                  value:
+                    id: "550e8400-e29b-41d4-a716-446655440001"
+                    workflowName: "Order #12344 Fulfillment"
+                    workflowType: "ORDER_FULFILLMENT"
+                    status: "COMPLETED"
+                    priority: "NORMAL"
+                    correlationId: "order-12344"
+                    inputParameters:
+                      orderId: "12344"
+                    outputParameters:
+                      trackingNumber: "TRK-987654321"
+                      shipmentId: "SHIP-001"
+                    steps:
+                      - stepId: "step-1"
+                        stepName: "Validate Inventory"
+                        status: "COMPLETED"
+                        serviceName: "inventory-service"
+                        operation: "validateStock"
+                        retryCount: 0
+                        executionDurationMs: 1800
+                      - stepId: "step-2"
+                        stepName: "Create Pick Task"
+                        status: "COMPLETED"
+                        serviceName: "task-execution-service"
+                        operation: "createPickTask"
+                        retryCount: 0
+                        executionDurationMs: 3200
+                      - stepId: "step-3"
+                        stepName: "Ship Order"
+                        status: "COMPLETED"
+                        serviceName: "warehouse-operations"
+                        operation: "shipOrder"
+                        retryCount: 1
+                        executionDurationMs: 5000
+                    progressPercentage: 100.0
+                    retryCount: 0
+                    maxRetries: 3
+                    startedAt: "2025-11-01T09:00:00Z"
+                    completedAt: "2025-11-01T09:00:10Z"
+                    executionDurationMs: 10000
+                    createdAt: "2025-11-01T08:59:58Z"
+                    updatedAt: "2025-11-01T09:00:10Z"
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/workflows/{workflowId}/steps/execute:
+    post:
+      tags:
+        - Workflow Orchestration
+      summary: Execute a specific step in a workflow
+      description: |
+        Manually triggers execution of a specific step within a workflow. This is typically used for:
+        - Manual intervention in paused workflows
+        - Retrying individual failed steps
+        - Testing step execution in development
+
+        **Note:** This is an advanced operation. Most workflows execute steps automatically.
+      operationId: executeStep
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecuteStepRequest'
+            examples:
+              pickingStep:
+                summary: Execute Picking Step
+                value:
+                  stepId: "step-2"
+                  inputData:
+                    taskId: "PICK-12345"
+                    location: "A1-B2-C3"
+                    quantity: 2
+      responses:
+        '200':
+          description: Step execution initiated successfully
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/workflows/{workflowId}/pause:
+    put:
+      tags:
+        - Workflow Orchestration
+      summary: Pause a running workflow
+      description: |
+        Pauses a currently executing workflow. The workflow will complete its current step but will not proceed to the next step.
+
+        **Use Cases:**
+        - Emergency stop during warehouse incidents
+        - Temporary hold for inventory verification
+        - Await manual approval before proceeding
+        - Troubleshooting and debugging
+
+        **Behavior:**
+        - Current step execution completes
+        - Workflow enters PAUSED state
+        - Can be resumed later from the same point
+        - No data loss or rollback occurs
+      operationId: pauseWorkflow
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+      responses:
+        '200':
+          description: Workflow paused successfully
+        '400':
+          description: Workflow cannot be paused (e.g., already completed or cancelled)
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/workflows/{workflowId}/resume:
+    put:
+      tags:
+        - Workflow Orchestration
+      summary: Resume a paused workflow
+      description: |
+        Resumes a previously paused workflow from where it left off.
+
+        **Requirements:**
+        - Workflow must be in PAUSED state
+        - System resources must be available
+
+        **Behavior:**
+        - Workflow continues from the next pending step
+        - Previous step results are preserved
+        - Execution context is maintained
+      operationId: resumeWorkflow
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+      responses:
+        '200':
+          description: Workflow resumed successfully
+        '400':
+          description: Workflow is not in paused state
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/workflows/{workflowId}/cancel:
+    put:
+      tags:
+        - Workflow Orchestration
+      summary: Cancel a workflow
+      description: |
+        Cancels an active workflow. This is a terminal operation - cancelled workflows cannot be resumed.
+
+        **Important:**
+        - This does NOT trigger compensation/rollback (use `/compensate` for that)
+        - Current step execution will be interrupted
+        - Workflow enters CANCELLED state (terminal)
+
+        **Use Cases:**
+        - Order cancellation requests
+        - Duplicate workflow detection
+        - System maintenance
+        - Invalid workflow parameters discovered
+      operationId: cancelWorkflow
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - name: reason
+          in: query
+          description: Reason for cancellation
+          required: false
+          schema:
+            type: string
+            example: "Customer requested order cancellation"
+      responses:
+        '200':
+          description: Workflow cancelled successfully
+        '400':
+          description: Workflow cannot be cancelled (e.g., already completed)
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/workflows/{workflowId}/retry:
+    put:
+      tags:
+        - Workflow Orchestration
+      summary: Retry a failed workflow
+      description: |
+        Retries a failed workflow from the point of failure. Useful when transient errors caused the failure.
+
+        **Retry Behavior:**
+        - Workflow must be in FAILED state
+        - Respects maxRetries configuration
+        - Uses exponential backoff between retries
+        - Preserves execution context and completed steps
+
+        **When to Use:**
+        - Temporary network issues resolved
+        - Dependent service is back online
+        - Inventory became available
+        - System resources freed up
+      operationId: retryWorkflow
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+      responses:
+        '200':
+          description: Workflow retry initiated successfully
+        '400':
+          description: Workflow is not in failed state or max retries exceeded
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/workflows/{workflowId}/compensate:
+    put:
+      tags:
+        - Workflow Orchestration
+      summary: Compensate (rollback) a failed workflow
+      description: |
+        Initiates saga-based compensation to rollback a failed workflow. This executes compensation actions for all completed steps in reverse order.
+
+        **Compensation Process:**
+        1. Workflow enters COMPENSATING state
+        2. Completed steps are rolled back in reverse order
+        3. Each step's compensation action is executed
+        4. Workflow enters COMPENSATED state when complete
+
+        **Example Compensations:**
+        - Unreserve inventory
+        - Cancel pick tasks
+        - Release allocated resources
+        - Reverse shipment creation
+        - Notify downstream systems
+
+        **Use Cases:**
+        - Failed workflows that need complete rollback
+        - Data consistency requirements
+        - Business rule violations discovered mid-workflow
+        - Unable to complete critical steps
+      operationId: compensateWorkflow
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - name: reason
+          in: query
+          description: Reason for compensation
+          required: false
+          schema:
+            type: string
+            example: "Inventory unavailable - rolling back reservations"
+      responses:
+        '200':
+          description: Workflow compensation initiated successfully
+        '400':
+          description: Workflow cannot be compensated
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/workflows/{id}/waveless:
+    put:
+      tags:
+        - Waveless Processing
+      summary: Enable waveless processing for workflow
+      description: |
+        Enables waveless processing mode for a specific workflow. Waveless processing allows continuous order fulfillment without traditional wave constraints.
+
+        **Waveless Processing Benefits:**
+        - Continuous order fulfillment (no waiting for waves)
+        - Reduced order-to-ship time
+        - Better resource utilization
+        - Dynamic priority adjustment
+        - Real-time processing
+
+        **Requirements:**
+        - Workflow type must support waveless (ORDER_FULFILLMENT, PICKING, PACKING)
+        - System waveless processing must be enabled
+        - Sufficient system resources
+
+        **How It Works:**
+        1. Workflow is added to priority queue
+        2. Processed based on priority (HIGH > NORMAL > LOW)
+        3. Load balancing ensures optimal throughput
+        4. Dynamic rebalancing adjusts to system load
+      operationId: enableWaveless
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+      responses:
+        '200':
+          description: Waveless processing enabled successfully
+        '400':
+          description: Workflow type does not support waveless processing
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/workflows/rebalance:
+    post:
+      tags:
+        - Waveless Processing
+      summary: Rebalance system load
+      description: |
+        Manually triggers system load rebalancing across all active workflows. Normally this happens automatically at configured intervals.
+
+        **Rebalancing Process:**
+        - Analyzes current system utilization
+        - Redistributes workflows based on priority
+        - Adjusts concurrent execution limits
+        - Optimizes resource allocation
+
+        **Target Utilization:**
+        - Default: 85% (0.85)
+        - Range: 0.0 to 1.0
+        - Lower values = more conservative resource usage
+        - Higher values = maximum throughput (risk of overload)
+
+        **Use Cases:**
+        - System performance issues detected
+        - After adding/removing capacity
+        - During high-volume periods
+        - Testing load distribution
+      operationId: rebalanceLoad
+      parameters:
+        - name: targetUtilization
+          in: query
+          description: Target system utilization (0.0 to 1.0)
+          required: false
+          schema:
+            type: number
+            format: double
+            minimum: 0.0
+            maximum: 1.0
+            default: 0.85
+            example: 0.85
+      responses:
+        '200':
+          description: System load rebalancing initiated successfully
+        '400':
+          description: Invalid target utilization value
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/orchestration/health:
+    get:
+      tags:
+        - Health & Metrics
+      summary: Get orchestration engine health
+      description: |
+        Returns comprehensive health information about the orchestration engine.
+
+        **Health Indicators:**
+        - Overall system status (UP/DOWN)
+        - Active workflow count
+        - Pending workflow queue depth
+        - Completed/failed workflow statistics
+        - System utilization percentage
+        - Service version
+
+        **Status Values:**
+        - UP: System is healthy and operational
+        - DEGRADED: System is operational but experiencing issues
+        - DOWN: System is not operational
+
+        **Use Cases:**
+        - Kubernetes liveness/readiness probes
+        - Load balancer health checks
+        - Monitoring dashboards
+        - Alerting systems
+      operationId: getHealth
+      responses:
+        '200':
+          description: Health check successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemHealthResponse'
+              examples:
+                healthy:
+                  summary: Healthy System
+                  value:
+                    status: "UP"
+                    version: "1.0.0"
+                    activeWorkflows: 42
+                    pendingWorkflows: 5
+                    completedWorkflows: 1523
+                    failedWorkflows: 12
+                    systemUtilization: 65.5
+                    timestamp: "2025-11-01T10:00:00Z"
+                highLoad:
+                  summary: High Load System
+                  value:
+                    status: "UP"
+                    version: "1.0.0"
+                    activeWorkflows: 95
+                    pendingWorkflows: 150
+                    completedWorkflows: 5234
+                    failedWorkflows: 45
+                    systemUtilization: 92.3
+                    timestamp: "2025-11-01T10:00:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/orchestration/metrics:
+    get:
+      tags:
+        - Health & Metrics
+      summary: Get system metrics
+      description: |
+        Returns detailed operational metrics for monitoring and analytics.
+
+        **Metric Categories:**
+        - **Workflow Counts**: Total, active, by priority
+        - **Performance**: Average execution time, success rate
+        - **System Load**: Current utilization, queue depth
+        - **Waveless Processing**: Batch sizes, processing intervals
+        - **Additional Metrics**: Custom and computed metrics
+
+        **Use Cases:**
+        - Prometheus/Grafana monitoring
+        - Performance analysis
+        - Capacity planning
+        - SLA compliance tracking
+        - Business intelligence dashboards
+      operationId: getMetrics
+      responses:
+        '200':
+          description: Metrics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemMetricsResponse'
+              examples:
+                normalOperation:
+                  summary: Normal Operation Metrics
+                  value:
+                    totalWorkflows: 1582
+                    activeWorkflows: 42
+                    highPriorityWorkflows: 8
+                    normalPriorityWorkflows: 28
+                    lowPriorityWorkflows: 6
+                    averageExecutionTimeMs: 12500.5
+                    successRate: 95.5
+                    systemLoad: 0.655
+                    queueDepth: 5
+                    additionalMetrics:
+                      wavelessEnabled: true
+                      averageStepsPerWorkflow: 4.2
+                      compensationRate: 2.1
+                      retryRate: 8.3
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+components:
+  parameters:
+    WorkflowId:
+      name: id
+      in: path
+      description: Unique identifier of the workflow instance
+      required: true
+      schema:
+        type: string
+        format: uuid
+        example: "550e8400-e29b-41d4-a716-446655440000"
+
+  schemas:
+    StartWorkflowRequest:
+      type: object
+      required:
+        - workflowDefinitionId
+        - workflowName
+        - workflowType
+        - triggeredBy
+      properties:
+        workflowDefinitionId:
+          type: string
+          description: ID of the workflow definition template to use
+          example: "order-fulfillment-v2.3"
+        workflowName:
+          type: string
+          description: Human-readable name for this workflow instance
+          example: "Order #12345 Fulfillment"
+        workflowType:
+          $ref: '#/components/schemas/WorkflowType'
+        triggeredBy:
+          type: string
+          description: Service or user that initiated this workflow
+          example: "order-management-service"
+        correlationId:
+          type: string
+          description: External ID for correlation (e.g., order ID, wave ID)
+          example: "order-12345"
+        inputParameters:
+          type: object
+          additionalProperties: true
+          description: Workflow-specific input parameters
+          example:
+            orderId: "12345"
+            customerId: "CUST-789"
+            warehouseId: "WH-001"
+        enableWaveless:
+          type: boolean
+          description: Enable waveless processing for this workflow
+          default: false
+        maxRetries:
+          type: integer
+          description: Maximum number of retry attempts on failure
+          minimum: 0
+          maximum: 10
+          default: 3
+        timeoutMs:
+          type: integer
+          format: int64
+          description: Workflow execution timeout in milliseconds
+          minimum: 1000
+          default: 300000
+          example: 300000
+        priority:
+          $ref: '#/components/schemas/WorkflowPriority'
+
+    ExecuteStepRequest:
+      type: object
+      required:
+        - stepId
+        - inputData
+      properties:
+        stepId:
+          type: string
+          description: Unique identifier of the step to execute
+          example: "step-2"
+        inputData:
+          type: object
+          additionalProperties: true
+          description: Input data for step execution
+          example:
+            taskId: "PICK-12345"
+            location: "A1-B2-C3"
+            quantity: 2
+
+    WorkflowResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique workflow instance identifier
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        workflowName:
+          type: string
+          description: Human-readable workflow name
+          example: "Order #12345 Fulfillment"
+        workflowType:
+          type: string
+          description: Type of workflow
+          example: "ORDER_FULFILLMENT"
+        status:
+          $ref: '#/components/schemas/WorkflowStatus'
+        priority:
+          type: string
+          description: Workflow execution priority
+          example: "HIGH"
+        correlationId:
+          type: string
+          description: External correlation ID
+          example: "order-12345"
+        inputParameters:
+          type: object
+          additionalProperties: true
+          description: Input parameters provided when workflow started
+        outputParameters:
+          type: object
+          additionalProperties: true
+          description: Output data from completed workflow
+          nullable: true
+        steps:
+          type: array
+          description: List of all step executions in this workflow
+          items:
+            $ref: '#/components/schemas/StepExecutionResponse'
+        progressPercentage:
+          type: number
+          format: double
+          description: Workflow completion progress (0-100)
+          minimum: 0
+          maximum: 100
+          example: 66.67
+        retryCount:
+          type: integer
+          description: Number of times this workflow has been retried
+          example: 0
+        maxRetries:
+          type: integer
+          description: Maximum allowed retries
+          example: 3
+        startedAt:
+          type: string
+          format: date-time
+          description: When workflow execution started
+          example: "2025-11-01T10:00:00Z"
+        completedAt:
+          type: string
+          format: date-time
+          description: When workflow execution completed
+          nullable: true
+          example: "2025-11-01T10:05:30Z"
+        executionDurationMs:
+          type: integer
+          format: int64
+          description: Total execution time in milliseconds
+          nullable: true
+          example: 330000
+        createdAt:
+          type: string
+          format: date-time
+          description: When workflow was created
+          example: "2025-11-01T09:59:58Z"
+        updatedAt:
+          type: string
+          format: date-time
+          description: Last update timestamp
+          example: "2025-11-01T10:05:30Z"
+
+    StepExecutionResponse:
+      type: object
+      properties:
+        stepId:
+          type: string
+          description: Unique step identifier
+          example: "step-1"
+        stepName:
+          type: string
+          description: Human-readable step name
+          example: "Validate Inventory"
+        status:
+          type: string
+          description: Current step execution status
+          enum: [PENDING, EXECUTING, COMPLETED, FAILED, SKIPPED]
+          example: "COMPLETED"
+        serviceName:
+          type: string
+          description: Name of the service executing this step
+          example: "inventory-service"
+        operation:
+          type: string
+          description: Operation being performed
+          example: "validateStock"
+        outputData:
+          type: object
+          additionalProperties: true
+          description: Output data from step execution
+          nullable: true
+        retryCount:
+          type: integer
+          description: Number of retry attempts for this step
+          example: 0
+        startedAt:
+          type: string
+          format: date-time
+          description: When step execution started
+          nullable: true
+          example: "2025-11-01T10:00:00Z"
+        completedAt:
+          type: string
+          format: date-time
+          description: When step execution completed
+          nullable: true
+          example: "2025-11-01T10:00:02Z"
+        executionDurationMs:
+          type: integer
+          format: int64
+          description: Step execution time in milliseconds
+          nullable: true
+          example: 2000
+        errorMessage:
+          type: string
+          description: Error message if step failed
+          nullable: true
+          example: null
+
+    SystemHealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          description: Overall system health status
+          enum: [UP, DEGRADED, DOWN]
+          example: "UP"
+        version:
+          type: string
+          description: Application version
+          example: "1.0.0"
+        activeWorkflows:
+          type: integer
+          format: int64
+          description: Number of currently executing workflows
+          example: 42
+        pendingWorkflows:
+          type: integer
+          format: int64
+          description: Number of workflows waiting to execute
+          example: 5
+        completedWorkflows:
+          type: integer
+          format: int64
+          description: Total number of completed workflows
+          example: 1523
+        failedWorkflows:
+          type: integer
+          format: int64
+          description: Total number of failed workflows
+          example: 12
+        systemUtilization:
+          type: number
+          format: double
+          description: Current system utilization percentage
+          minimum: 0
+          maximum: 100
+          example: 65.5
+        timestamp:
+          type: string
+          format: date-time
+          description: Health check timestamp
+          example: "2025-11-01T10:00:00Z"
+
+    SystemMetricsResponse:
+      type: object
+      properties:
+        totalWorkflows:
+          type: integer
+          format: int64
+          description: Total number of workflows in the system
+          example: 1582
+        activeWorkflows:
+          type: integer
+          format: int64
+          description: Currently executing workflows
+          example: 42
+        highPriorityWorkflows:
+          type: integer
+          format: int64
+          description: High priority workflows in queue
+          example: 8
+        normalPriorityWorkflows:
+          type: integer
+          format: int64
+          description: Normal priority workflows in queue
+          example: 28
+        lowPriorityWorkflows:
+          type: integer
+          format: int64
+          description: Low priority workflows in queue
+          example: 6
+        averageExecutionTimeMs:
+          type: number
+          format: double
+          description: Average workflow execution time
+          example: 12500.5
+        successRate:
+          type: number
+          format: double
+          description: Workflow success rate percentage
+          minimum: 0
+          maximum: 100
+          example: 95.5
+        systemLoad:
+          type: number
+          format: double
+          description: Current system load (0.0 to 1.0)
+          minimum: 0
+          maximum: 1
+          example: 0.655
+        queueDepth:
+          type: integer
+          description: Number of workflows in pending queue
+          example: 5
+        additionalMetrics:
+          type: object
+          additionalProperties: true
+          description: Additional custom metrics
+          example:
+            wavelessEnabled: true
+            averageStepsPerWorkflow: 4.2
+
+    WorkflowType:
+      type: string
+      description: Type of warehouse workflow
+      enum:
+        - ORDER_FULFILLMENT
+        - RECEIVING
+        - PUTAWAY
+        - PICKING
+        - PACKING
+        - SHIPPING
+        - RETURNS_PROCESSING
+        - INVENTORY_TRANSFER
+        - CYCLE_COUNT
+        - REPLENISHMENT
+        - CROSS_DOCKING
+        - WAVE_PROCESSING
+        - WAVELESS_PROCESSING
+        - QUALITY_CHECK
+        - VALUE_ADDED_SERVICE
+      example: ORDER_FULFILLMENT
+
+    WorkflowStatus:
+      type: string
+      description: Current workflow execution status
+      enum:
+        - PENDING
+        - EXECUTING
+        - PAUSED
+        - COMPLETED
+        - FAILED
+        - COMPENSATING
+        - COMPENSATED
+        - CANCELLED
+      example: EXECUTING
+
+    WorkflowPriority:
+      type: string
+      description: Workflow execution priority
+      enum:
+        - HIGH
+        - NORMAL
+        - LOW
+      default: NORMAL
+      example: HIGH
+
+    ErrorResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: When the error occurred
+          example: "2025-11-01T10:00:00Z"
+        status:
+          type: integer
+          description: HTTP status code
+          example: 400
+        error:
+          type: string
+          description: Error type
+          example: "Bad Request"
+        message:
+          type: string
+          description: Human-readable error message
+          example: "Workflow definition ID is required"
+        path:
+          type: string
+          description: Request path that caused the error
+          example: "/api/v1/workflows"
+        validationErrors:
+          type: array
+          description: Field-level validation errors
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+                example: "workflowDefinitionId"
+              message:
+                type: string
+                example: "must not be blank"
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            timestamp: "2025-11-01T10:00:00Z"
+            status: 400
+            error: "Bad Request"
+            message: "Validation failed"
+            path: "/api/v1/workflows"
+            validationErrors:
+              - field: "workflowDefinitionId"
+                message: "must not be blank"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            timestamp: "2025-11-01T10:00:00Z"
+            status: 404
+            error: "Not Found"
+            message: "Workflow with id '550e8400-e29b-41d4-a716-446655440000' not found"
+            path: "/api/v1/workflows/550e8400-e29b-41d4-a716-446655440000"
+
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            timestamp: "2025-11-01T10:00:00Z"
+            status: 500
+            error: "Internal Server Error"
+            message: "An unexpected error occurred"
+            path: "/api/v1/workflows"
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token-based authentication
+
+security:
+  - bearerAuth: []
